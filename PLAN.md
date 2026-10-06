@@ -87,5 +87,23 @@ Every mod must work on the **terminal**, **desktop** (Code tab) and the **Claude
 - **Colour choice**: picked automatically from a 12-colour palette, the same colour every time for the same repo, and readable in light and dark themes. `/color <name|#hex>` pins a colour for the repo (saved in `$.store`), `/color auto` resets it, `/color` lists the palette.
 - **Mobile**: the band is not raised there, so the status line shows `● modemon` with a colour emoji (🟣🔵🟢🟡🟠🔴 …) matched to the palette.
 
+### 9. `deploy-deck`: deployments panel and live status tracker
+- **Providers**: GitHub (Actions workflow runs plus Deployments and environments), Vercel (deployments, preview and production), Cloudflare (Pages deployments with their stages, Workers versions and deployments), Render (service deploys). Each is an adapter behind one interface: `detect(repo) → targets`, `list(target) → Deploy[]`, `normalize → { provider, project, env, version/commit, branch, stage, state, startedAt, finishedAt, url, logsUrl }`.
+- **Auth**: one read-only token per provider in `sensitive` userConfig fields (`githubToken`, `vercelToken`, `vercelTeamId`, `cloudflareToken`, `cloudflareAccountId`, `renderToken`), never logged or drawn. A missing token falls back to a logged-in CLI where one exists (`gh api`, `vercel`, `wrangler`) via `$.process.run`. **Read-only**: GET requests only.
+- **Scope**: auto-detected from the repo (git remote → GitHub owner/repo; `.vercel/project.json` or `vercel.json`; `wrangler.toml`/`wrangler.jsonc`; `render.yaml`), plus extra targets pinned in settings (`targets`, e.g. `vercel:my-app, cloudflare-pages:site, render:srv-123`).
+- **Tracker**: polls every 10s while any deploy is in progress and every 2 min when idle, backing off on errors and rate limits. Stages are normalised to `queued → building → deploying → live ✓ / failed ✗ / canceled`.
+- **UI**:
+  - Band above the prompt only while something is in flight: one row per active deploy with a stage pipeline (`● queued ━ ◉ building ━ ○ deploying ━ ○ live`) and elapsed time. It composes with other bands via `next(e)`.
+  - `/deploys` opens a panel with every target's latest deploys (version/commit, branch, env, state, age, URL), or an inline card on mobile.
+  - A toast when a deploy finishes, and a status line `🚀 vercel building 1:12` / `✓ prod live v1.4.2`.
+- `/deploys refresh`, `/deploys add <provider:id>`.
+
+### 10. `decision-log`: decisions you can go back to
+- **Storage**: ADR markdown files committed in the repo, `docs/decisions/NNNN-slug.md` (folder configurable), in MADR style with front matter (`status`, `date`, `deciders`, `supersedes`, `superseded-by`, `tags`, `files`) and sections Context, Decision, Alternatives considered, Consequences.
+- **Capture**: Claude gets a `decision` tool (`record`, `list`, `search`, `get`, `supersede`, `set-status`) and a short system-prompt note to record real, consequential decisions (not trivia) as they happen, with the why and the alternatives. You add your own with `/decide <title> — <why>`.
+- **Lifecycle**: `proposed | accepted | superseded | rejected`. `supersede` links the old and new records both ways.
+- **Recall**: `/decisions` lists them (pane on terminal and desktop, inline card on mobile) with buttons to open one in full. `/decisions <n>` shows one. Claude can `search` and `get` them when it needs context.
+- An index `docs/decisions/README.md` is regenerated on each change.
+
 ## Delivery
 All seven built in parallel, each validated, tested and type-checked, then pushed to `main`. Per-mod deviations and limitations are listed in each mod's README.
