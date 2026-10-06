@@ -125,10 +125,30 @@ export function shouldFold(tool: string): boolean {
   return !KEEP_WHOLE.has(tool)
 }
 
+/** Text cut to `max` characters, an ellipsis at the end when cut. */
+export function clip(text: string, max: number): string {
+  if (text.length <= max) return text
+  return max <= 1 ? '…'.slice(0, max) : `${text.slice(0, max - 1)}…`
+}
+
+/** Text cut to `max` characters from the start (`…/src/auth.ts`), for paths. */
+export function clipStart(text: string, max: number): string {
+  if (text.length <= max) return text
+  return max <= 1 ? '…'.slice(0, max) : `…${text.slice(text.length - (max - 1))}`
+}
+
 /** The first non-empty line of a text, cut to `max` characters. */
 export function firstLine(text: string, max = 80): string {
-  const line = text.split('\n').find(l => l.trim() !== '')?.trim() ?? ''
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+  return clip(text.split('\n').find(l => l.trim() !== '')?.trim() ?? '', max)
+}
+
+/** Columns used when a surface has not measured itself. */
+export const DEFAULT_COLUMNS = 100
+
+/** The width a row may use: the viewport's, never below 20 cells. */
+export function columnsOf(viewport: { columns: number } | undefined): number {
+  const columns = viewport?.columns
+  return typeof columns === 'number' && Number.isFinite(columns) ? Math.max(20, Math.floor(columns)) : DEFAULT_COLUMNS
 }
 
 function field(input: unknown, name: string): string | undefined {
@@ -146,20 +166,33 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
 
-/** What the call was about, in a few words: `npm test`, `src/a.ts`, `"TODO"`. */
-export function callTarget(input: unknown): string {
-  const named = ['command', 'file_path', 'notebook_path', 'path', 'url', 'query', 'description', 'skill']
+const PATH_FIELDS = new Set(['file_path', 'notebook_path', 'path'])
+const NAMED_FIELDS = ['command', 'file_path', 'notebook_path', 'path', 'url', 'query', 'description', 'skill']
+
+/** What the call was about, uncut: its first line, and whether it is a path. */
+export function rawTarget(input: unknown): { text: string; isPath: boolean } {
   const pattern = field(input, 'pattern')
-  if (pattern !== undefined) return `"${firstLine(pattern, 50)}"`
-  for (const name of named) {
+  if (pattern !== undefined) return { text: `"${firstLine(pattern, 1_000)}"`, isPath: false }
+  for (const name of NAMED_FIELDS) {
     const value = field(input, name)
-    if (value !== undefined) return firstLine(value, 70)
+    if (value !== undefined) return { text: firstLine(value, 1_000), isPath: PATH_FIELDS.has(name) }
   }
   if (typeof input === 'object' && input !== null) {
     const first = Object.values(input).find((v): v is string => typeof v === 'string' && v !== '')
-    if (first !== undefined) return firstLine(first, 50)
+    if (first !== undefined) return { text: firstLine(first, 1_000), isPath: false }
   }
-  return ''
+  return { text: '', isPath: false }
+}
+
+/** Cuts a target to `max`: a path keeps its end (`…/src/auth.ts`), anything else its start. */
+export function clipTarget(target: { text: string; isPath: boolean }, max: number): string {
+  return target.isPath ? clipStart(target.text, max) : clip(target.text, max)
+}
+
+/** What the call was about, in a few words: `npm test`, `src/a.ts`, `"TODO"`. */
+export function callTarget(input: unknown): string {
+  const target = rawTarget(input)
+  return clipTarget(target, target.text.startsWith('"') ? 50 : 70)
 }
 
 /** A few words on how the call came out, from its stored result; '' when unknown. */
@@ -253,4 +286,62 @@ export function groupErrors(calls: readonly CallLike[]): string | undefined {
   })
   const more = failed.length > 2 ? `, +${failed.length - 2} more` : ''
   return `${failed.length} failed: ${named.join(', ')}${more}`
+}
+
+/**
+ * `callLine` sized to `width` cells. The target gives way first (a path keeps
+ * its file name), then the outcome; the tool's name is always kept.
+ */
+export function fitCallLine(call: CallLike, width: number): string {
+  const full = callLine(call)
+  if (full.length <= width) return full
+  const target = rawTarget(call.input)
+  const tail = call.isInterrupted ? 'interrupted' : call.isErrored ? '' : outcome(call.output)
+  const tailText = tail === '' ? '' : ` · ${tail}`
+  for (const withTail of [tailText, '']) {
+    const room = width - call.tool.length - 1 - withTail.length
+    if (target.text !== '' && room >= 8) return `${call.tool} ${clipTarget(target, room)}${withTail}`
+  }
+  return clip(target.text === '' ? `${call.tool}${tailText}` : `${call.tool} ${target.text}`, width)
+}
+
+/**
+ * `groupLine` sized to `width` cells: the tally loses tools from its end
+ * (`ran 9 tools (Read ×4, Grep, …)`), then goes; the count is always kept.
+ */
+export function fitGroupLine(calls: readonly CallLike[], width: number): string {
+  const full = groupLine(calls)
+  if (full.length <= width) return full
+  const running = calls.some(c => c.isRunning)
+  const head = `${running ? 'running' : 'ran'} ${plural(calls.length, 'tool')}`
+  const dots = running ? '…' : ''
+  const parts = toolTally(calls.map(c => c.tool)).split(', ')
+  for (let keep = parts.length - 1; keep >= 1; keep -= 1) {
+    const line = `${head} (${parts.slice(0, keep).join(', ')}, …)${dots}`
+    if (line.length <= width) return line
+  }
+  return clip(`${head}${dots}`, width)
+}
+
+/** What a `/casual` answer row says, read back from `describePrefs`'s text. */
+export type DescribedPrefs = { isOn: false } | { isOn: true; verbosity: CasualVerbosity; isFolding: boolean }
+
+/** Reads `describePrefs`'s text back; undefined for anything else (usage, errors). */
+export function parseDescribed(text: string): DescribedPrefs | undefined {
+  if (text.startsWith('casual is off.')) return { isOn: false }
+  const on = /^casual is on \((chill|brief), (tool rows folded|tool rows left as they are)\)\./.exec(text)
+  if (on === null || !isVerbosity(on[1])) return undefined
+  return { isOn: true, verbosity: on[1], isFolding: on[2] === 'tool rows folded' }
+}
+
+/** The `/casual` card's rows: label, value, hint; each short enough for a phone. */
+export function cardRows(state: DescribedPrefs): { rows: Array<[string, string]>; hint: string } {
+  if (!state.isOn) return { rows: [['style', 'default']], hint: '/casual on to turn it back on' }
+  return {
+    rows: [
+      ['style', state.verbosity === 'brief' ? 'brief · 1-2 sentences' : 'chill · 1-4 sentences'],
+      ['tools', state.isFolding ? 'folded' : 'shown in full'],
+    ],
+    hint: '/casual off · brief · chill',
+  }
 }

@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { ChecklistItem } from '../types'
 import {
   add,
   bandHead,
   clearDone,
+  clip,
   done,
   formatList,
   nudgeText,
@@ -15,6 +16,7 @@ import {
   remove,
   sanitize,
   start,
+  statusText,
   undo,
   type OpResult,
 } from './lib'
@@ -22,6 +24,13 @@ import {
 const TOOL = 'mcp__checklist__checklist'
 const PANE = 'checklist'
 const STORE_PREFIX = 'list:'
+/** First line of `/checklist` when the pane cannot be placed; the CommandOutput hook draws the list for it. */
+const WAITING_HEAD = 'The checklist pane has no room here (it opens once the terminal is wide enough), so here is the list:'
+/** Args of `/checklist` that show the list (no args toggles the pane). */
+const LIST_ARGS = new Set(['', 'list', 'ls', 'show'])
+
+/** The elements every surface has, mobile included: the only ones the list trees use. */
+type ListElements = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button'>
 
 const items = atom({ plugin: 'checklist', key: 'items' } as const, [])
 const storeKey = atom({ plugin: 'checklist', key: 'storeKey' } as const, '')
@@ -76,7 +85,15 @@ async function load($: Dollar): Promise<string> {
   const stored = sanitize(await $.store.get(key))
   await update($, storeKey, () => key)
   await update($, items, () => stored)
+  refreshStatus($, stored)
   return key
+}
+
+let statusEnabled = true // set from the `showStatus` option on every (re)load of register
+
+/** The status line (`☑ 3/7 · next: ...`): the one checklist view the mobile app shows unasked. */
+function refreshStatus($: Dollar, list: readonly ChecklistItem[]): void {
+  if (statusEnabled) $.ui.status(statusText(list))
 }
 
 async function ensureLoaded($: Dollar): Promise<string> {
@@ -93,7 +110,10 @@ async function mutate($: Dollar, op: (list: ChecklistItem[], now: number) => OpR
     outcome = op(list, now)
     return outcome.error === undefined ? outcome.items : list
   })
-  if (outcome.error === undefined) await $.store.set(key, next)
+  if (outcome.error === undefined) {
+    await $.store.set(key, next)
+    refreshStatus($, next)
+  }
   return { ...outcome, items: next }
 }
 
@@ -108,7 +128,8 @@ function names(list: readonly ChecklistItem[]): string {
 }
 
 async function togglePane($: Dollar): Promise<string> {
-  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
+  // A pane that is open but waits undrawn (narrow terminal, mobile-only session) is not "open" to the person.
+  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isPlaced)
   if (isOpen) {
     await $.ui.close({ id: PANE })
     return 'Checklist pane closed.'
@@ -116,12 +137,13 @@ async function togglePane($: Dollar): Promise<string> {
   const list = await read($, items)
   const opened = await $.ui.open({ id: PANE, title: 'Checklist', rows: Math.min(Math.max(list.length, 1) + 3, 20) })
   if (opened.isPlaced) return `Checklist pane opened. ${summary(list)}`
-  return `Checklist pane is waiting for room (widen the terminal).\n${formatList(list)}`
+  return `${WAITING_HEAD}\n${formatList(list)}`
 }
 
 export const register: Register = (on, options) => {
   const showBand = options.showBand !== false
   const nudge = options.nudge !== false
+  statusEnabled = options.showStatus !== false
 
   on('session.start', async ($, e, next) => {
     try {
@@ -244,12 +266,13 @@ export const register: Register = (on, options) => {
   }
 
   if (showBand) {
+    // One band for every plugin: draw this part, then stack whatever the hooks beneath draw under it.
     on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
       const list = await read($, items)
       if (e.props.hasSurvey || list.length === 0) return next(e)
       const { Box, Text } = $.ui.resolve(e)
       const p = progress(list)
-      return (
+      const mine = (
         <Box key="checklist-band" flexDirection="row">
           <Text color={p.next === undefined ? 'success' : undefined}>
             {bandHead(list)}{' '}
@@ -259,52 +282,97 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>
       )
+      const below = await next(e)
+      if (isEmptyTree(below)) return mine
+      return (
+        <Box key="checklist-stack" flexDirection="column">
+          {mine}
+          {below}
+        </Box>
+      )
     })
   }
 
+  // The pane, every surface that places one. Only Box, Text and Button: all of them exist on mobile too.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const list = await read($, items)
-    const p = progress(list)
-    if (list.length === 0) {
-      return (
-        <Box key="empty" flexDirection="column">
-          <Text dimColor>
-            {'No items yet. Add one with /checklist add <text>, or ask Claude to plan its work with the checklist tool.'}
-          </Text>
-        </Box>
-      )
-    }
+    return listTree($, { Box, Button, Text }, list, e.props.bodyColumns)
+  })
+
+  // `/checklist` and `/checklist list` draw the list inline, with tappable ticks: always on mobile (which
+  // places no pane), and elsewhere for `list` or when the pane could not be placed.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'checklist' } }, async ($, e, next) => {
+    const args = e.props.args.trim().toLowerCase()
+    if (e.props.isErrored || !LIST_ARGS.has(args)) return next(e)
+    const inline = e.surface === 'mobile' || args !== '' || e.props.text.startsWith(WAITING_HEAD)
+    if (!inline) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const list = await read($, items)
+    return listTree($, { Box, Button, Text }, list, e.viewport?.columns)
+  })
+}
+
+/** True for a tree that draws nothing: no element, or Boxes/Texts holding only empty strings. */
+function isEmptyTree(tree: RenderElement | null | undefined): boolean {
+  if (tree === null || tree === undefined) return true
+  const el = tree as unknown as { type?: string; children?: unknown; props?: { children?: unknown } }
+  if (el.type !== 'Box' && el.type !== 'Text') return false
+  return isEmptyChildren(el.children ?? el.props?.children)
+}
+
+function isEmptyChildren(children: unknown): boolean {
+  if (children === undefined || children === null || children === false) return true
+  if (typeof children === 'string') return children === ''
+  if (typeof children === 'number') return false
+  if (Array.isArray(children)) return children.every(isEmptyChildren)
+  return isEmptyTree(children as RenderElement)
+}
+
+/** The full list with tick, remove and clear-done Buttons, for the pane and the inline command output. */
+function listTree($: Dollar, ui: ListElements, list: readonly ChecklistItem[], columns: number | undefined): RenderElement {
+  const { Box, Button, Text } = ui
+  const p = progress(list)
+  if (list.length === 0) {
     return (
-      <Box flexDirection="column">
-        <Text bold>
-          {bandHead(list)} {p.total - p.done} open
+      <Box key="empty" flexDirection="column">
+        <Text dimColor>
+          {'No items yet. Add one with /checklist add <text>, or ask Claude to plan its work with the checklist tool.'}
         </Text>
-        {list.map(item => (
-          <Box key={`row-${item.id}`} flexDirection="row">
-            <Button
-              key={`tick-${item.id}`}
-              plain
-              label={item.status === 'done' ? '☑' : item.status === 'doing' ? '◐' : '☐'}
-              onPress={() => mutate($, (l, now) => (item.status === 'done' ? undo(l, [item.id], now) : done(l, [item.id], now)))}
-            />
-            <Text
-              dimColor={item.status === 'done'}
-              strikethrough={item.status === 'done'}
-              bold={item.status === 'doing'}
-              wrap="truncate-end"
-            >
-              {' '}#{item.id} {item.text}{' '}
-            </Text>
-            <Button key={`rm-${item.id}`} plain dimColor label="✕" onPress={() => mutate($, l => remove(l, [item.id]))} />
-          </Box>
-        ))}
-        {p.done > 0 && (
-          <Box flexDirection="row">
-            <Button key="clear-done" label="Clear done" onPress={() => mutate($, l => clearDone(l))} />
-          </Box>
-        )}
       </Box>
     )
-  })
+  }
+  // Room for the tick, `#nn `, spaces and the ✕; a narrow phone gets a shorter line rather than a wrapped one.
+  const textMax = columns === undefined ? 200 : Math.max(columns - 12, 8)
+  return (
+    <Box key="list" flexDirection="column">
+      <Text bold>
+        {bandHead(list)} {p.total - p.done} open
+      </Text>
+      {list.map(item => (
+        <Box key={`row-${item.id}`} flexDirection="row">
+          <Button
+            key={`tick-${item.id}`}
+            plain
+            label={item.status === 'done' ? '☑' : item.status === 'doing' ? '◐' : '☐'}
+            onPress={() => mutate($, (l, now) => (item.status === 'done' ? undo(l, [item.id], now) : done(l, [item.id], now)))}
+          />
+          <Text
+            dimColor={item.status === 'done'}
+            strikethrough={item.status === 'done'}
+            bold={item.status === 'doing'}
+            wrap="truncate-end"
+          >
+            {' '}#{item.id} {clip(item.text, textMax)}{' '}
+          </Text>
+          <Button key={`rm-${item.id}`} plain dimColor label="✕" onPress={() => mutate($, l => remove(l, [item.id]))} />
+        </Box>
+      ))}
+      {p.done > 0 && (
+        <Box flexDirection="row">
+          <Button key="clear-done" label="Clear done" onPress={() => mutate($, l => clearDone(l))} />
+        </Box>
+      )}
+    </Box>
+  )
 }

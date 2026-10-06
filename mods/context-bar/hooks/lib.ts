@@ -84,6 +84,58 @@ export function statusText(s: ContextBarSnapshot | null): string {
   return s?.percent != null ? `ctx ${s.percent}%` : 'ctx --'
 }
 
+/** 🟢 under 50%, 🟡 under 80%, 🔴 from there; ⚪ before the first response. */
+export function zoneEmoji(percent: number | null): string {
+  if (percent === null) return '⚪'
+  if (percent < HALF) return '🟢'
+  if (percent < 80) return '🟡'
+
+  return '🔴'
+}
+
+/** The status entry for surfaces without the band (mobile): `🟡 ctx 71% · passive`. */
+export function richStatusText(s: ContextBarSnapshot | null): string {
+  const percent = s?.percent ?? null
+  if (percent === null) return `${zoneEmoji(null)} ctx --`
+
+  return `${zoneEmoji(percent)} ctx ${percent}% · ${zoneOf(percent)}`
+}
+
+/** What `/context-bar <args>` asks for. */
+export type CommandAction = 'show' | 'on' | 'off' | 'toggle' | 'unknown'
+
+export function parseCommand(args: string): CommandAction {
+  const arg = args.trim().toLowerCase()
+  if (arg === '' || arg === 'show' || arg === 'card') return 'show'
+  if (arg === 'on' || arg === 'off' || arg === 'toggle') return arg
+
+  return 'unknown'
+}
+
+/** The biggest content categories, largest first (free space and the buffer left out). */
+export function topCategories(s: ContextBarSnapshot, count: number): ContextBarSegment[] {
+  return s.segments
+    .filter(seg => seg.kind === 'used')
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, count)
+}
+
+/** A category's share of the window, as a whole percentage. */
+export function shareOf(s: ContextBarSnapshot, tokens: number): number {
+  return s.scale > 0 ? Math.round((tokens / s.scale) * 100) : 0
+}
+
+/** The card as plain text: what the model reads from the command's row. */
+export function cardText(s: ContextBarSnapshot | null): string {
+  if (s === null) return 'Context: not measured yet.'
+  const head = headlineRuns(s)
+    .map(r => r.text)
+    .join('')
+  const top = topCategories(s, 4).map(seg => `${seg.name} ${formatTokens(seg.tokens)}`)
+
+  return top.length > 0 ? `Context: ${head}. Largest (estimated): ${top.join(', ')}.` : `Context: ${head}.`
+}
+
 /**
  * Splits `cells` across `weights` by largest remainder, then gives every
  * positive weight at least one cell, taken from the widest share.

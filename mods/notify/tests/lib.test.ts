@@ -5,6 +5,13 @@ import {
   appleScriptFor,
   argvFor,
   askBody,
+  base64,
+  headerValue,
+  maskTopic,
+  ntfyRequest,
+  ntfyTarget,
+  shouldPush,
+  statusMarkdown,
   backendsFor,
   baseName,
   clean,
@@ -19,6 +26,7 @@ import {
   parseFrontAsn,
   platformFromUname,
   readConfig,
+  DEFAULTS,
   subagentBody,
   terminalBundle,
   terminalNotifierArgv,
@@ -169,5 +177,138 @@ describe('throttle', () => {
     expect(t.allow('done', 5000)).toBe(true)
     t.reset()
     expect(t.allow('done', 5001)).toBe(true)
+  })
+})
+
+/** Decodes RFC 2047 B-encoded UTF-8 words, as ntfy does, to check round trips. */
+function decodeWords(value: string): string {
+  const B = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const bytes: number[] = []
+  for (const word of value.split(' ')) {
+    const m = /^=\?UTF-8\?B\?([A-Za-z0-9+/=]*)\?=$/.exec(word)
+    if (m === null) throw new Error(`not an encoded word: ${word}`)
+    const b64 = (m[1] ?? '').replace(/=+$/, '')
+    let acc = 0
+    let bits = 0
+    for (const ch of b64) {
+      acc = (acc << 6) | B.indexOf(ch)
+      bits += 6
+      if (bits >= 8) {
+        bits -= 8
+        bytes.push((acc >> bits) & 0xff)
+      }
+    }
+  }
+  let out = ''
+  for (let i = 0; i < bytes.length; ) {
+    const b = bytes[i] ?? 0
+    const n = b < 0x80 ? 1 : b < 0xe0 ? 2 : b < 0xf0 ? 3 : 4
+    let cp = n === 1 ? b : b & (0xff >> (n + 1))
+    for (let k = 1; k < n; k++) cp = (cp << 6) | ((bytes[i + k] ?? 0) & 63)
+    out += String.fromCodePoint(cp)
+    i += n
+  }
+  return out
+}
+
+describe('ntfy', () => {
+  test('base64 matches the standard vectors', () => {
+    expect(base64([...'Man'].map(c => c.charCodeAt(0)))).toBe('TWFu')
+    expect(base64([...'Ma'].map(c => c.charCodeAt(0)))).toBe('TWE=')
+    expect(base64([...'M'].map(c => c.charCodeAt(0)))).toBe('TQ==')
+  })
+
+  test('ASCII header values pass through, flattened', () => {
+    expect(headerValue('Claude Code - repo')).toBe('Claude Code - repo')
+    expect(headerValue('evil\r\nX-Injected: 1')).toBe('evil X-Injected: 1')
+  })
+
+  test('non-ASCII titles become RFC 2047 encoded words', () => {
+    expect(headerValue('Claude Code · modemon')).toBe('=?UTF-8?B?Q2xhdWRlIENvZGUgwrcgbW9kZW1vbg==?=')
+    expect(decodeWords(headerValue('Claude Code · modemon'))).toBe('Claude Code · modemon')
+  })
+
+  test('long non-ASCII titles split into words of at most 75 chars, on character boundaries', () => {
+    const title = 'Claude Code · 日本語のリポジトリ 🚀 émoji-heavy-name'
+    const v = headerValue(title)
+    const words = v.split(' ')
+    expect(words.length).toBeGreaterThan(1)
+    for (const w of words) expect(w.length).toBeLessThanOrEqual(75)
+    expect(decodeWords(v)).toBe(title)
+  })
+
+  test('ASCII text that looks like an encoded word is encoded itself', () => {
+    const v = headerValue('=?UTF-8?B?aGk=?=')
+    expect(v).toStartWith('=?UTF-8?B?')
+    expect(decodeWords(v)).toBe('=?UTF-8?B?aGk=?=')
+  })
+
+  test('target: off, bad topic, bad server, trailing slash, self-hosted path', () => {
+    expect(ntfyTarget('https://ntfy.sh', '')).toEqual({ error: 'off (no ntfyTopic set)' })
+    expect('error' in ntfyTarget('https://ntfy.sh', 'has space')).toBe(true)
+    expect('error' in ntfyTarget('https://ntfy.sh', 'a/b')).toBe(true)
+    expect('error' in ntfyTarget('ftp://x', 'topic')).toBe(true)
+    expect('error' in ntfyTarget('https://user@evil', 'topic')).toBe(true)
+    expect(ntfyTarget('https://ntfy.sh/', 'abc_DEF-123')).toEqual({
+      url: 'https://ntfy.sh/abc_DEF-123',
+      server: 'https://ntfy.sh',
+      topic: 'abc_DEF-123',
+    })
+    expect(ntfyTarget('', 'abc')).toMatchObject({ url: 'https://ntfy.sh/abc' })
+    expect(ntfyTarget('http://10.0.0.2:8080/ntfy//', 'abc')).toMatchObject({ url: 'http://10.0.0.2:8080/ntfy/abc' })
+  })
+
+  test('request: POST with Title, Priority, Tags and the body', () => {
+    const needs = ntfyRequest('https://ntfy.sh/t', 'input', { title: 'Claude Code', body: 'Question: <which> & "why"?' })
+    expect(needs).toEqual({
+      url: 'https://ntfy.sh/t',
+      init: {
+        method: 'POST',
+        headers: {
+          Title: 'Claude Code',
+          Priority: 'high',
+          Tags: 'question',
+          'Content-Type': 'text/plain; charset=utf-8',
+        },
+        body: 'Question: <which> & "why"?',
+      },
+    })
+    expect(ntfyRequest('u', 'error', NOTE).init.headers).toMatchObject({ Priority: 'high', Tags: 'warning' })
+    expect(ntfyRequest('u', 'done', NOTE).init.headers).toMatchObject({ Priority: 'default', Tags: 'white_check_mark' })
+    expect(ntfyRequest('u', 'subagent', NOTE).init.headers).toMatchObject({ Priority: 'default', Tags: 'robot' })
+    // non-ASCII bodies stay UTF-8 (ntfy reads the body as UTF-8); only headers are encoded
+    expect(ntfyRequest('u', 'done', { title: 'é', body: 'Done: café ✓' }).init.body).toBe('Done: café ✓')
+  })
+
+  test('topic masking keeps only the ends', () => {
+    expect(maskTopic('claude-x7Hq9vR2mK4pL8sT')).toBe('cl••••sT')
+    expect(maskTopic('abc')).toBe('••••')
+    expect(maskTopic('abcdefg')).not.toContain('a')
+  })
+
+  test('shouldPush: skipped only while focused and the desktop side did not fail', () => {
+    expect(shouldPush(true, false, 'failed')).toBe(true) // cloud / no notifier
+    expect(shouldPush(true, false, 'sent')).toBe(true) // away from a working desktop
+    expect(shouldPush(true, true, 'skipped')).toBe(false)
+    expect(shouldPush(true, true, 'sent')).toBe(false)
+    expect(shouldPush(true, true, 'failed')).toBe(true)
+    expect(shouldPush(false, true, 'sent')).toBe(true)
+  })
+
+  test('readConfig: ntfy defaults and trimming', () => {
+    expect(readConfig(undefined)).toMatchObject({ ntfyTopic: '', ntfyServer: 'https://ntfy.sh', ntfyOnlyWhenAway: true })
+    expect(readConfig({ ntfyTopic: ' abc ', ntfyServer: '  ' })).toMatchObject({ ntfyTopic: 'abc', ntfyServer: 'https://ntfy.sh' })
+  })
+
+  test('status markdown masks the topic and flags a short one', () => {
+    const base = { isMuted: false, platform: 'linux' as const, backend: undefined, lastError: undefined, focus: 'x', lastNtfy: undefined }
+    const long = statusMarkdown({ ...base, config: { ...DEFAULTS, ntfyTopic: 'claude-x7Hq9vR2mK4pL8sT' } })
+    expect(long).toContain('`https://ntfy.sh/cl••••sT`')
+    expect(long).not.toContain('x7Hq9vR2mK4pL8sT')
+    expect(long).not.toContain('short topic')
+    const short = statusMarkdown({ ...base, config: { ...DEFAULTS, ntfyTopic: 'mytopic123' } })
+    expect(short).toContain('short topic')
+    const off = statusMarkdown({ ...base, config: DEFAULTS })
+    expect(off).toContain('**Phone (ntfy):** off')
   })
 })

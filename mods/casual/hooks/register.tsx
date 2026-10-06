@@ -6,13 +6,17 @@ import {
   STORE_KEY,
   USAGE,
   applyAction,
-  callLine,
+  cardRows,
+  clip,
+  columnsOf,
   describePrefs,
   effectiveVerbosity,
   errorText,
+  fitCallLine,
+  fitGroupLine,
   groupErrors,
-  groupLine,
   parseArgs,
+  parseDescribed,
   shouldFold,
   stylePrompt,
   toPrefs,
@@ -78,6 +82,34 @@ export const register: Register = (on, options) => {
     return { sections: withSection(composed.sections, text) }
   })
 
+  // `/casual`'s answer as a small card, on every surface (the phone included):
+  // drawn from the row's own text, so an old row keeps saying what it said.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'casual' } }, ($, e, next) => {
+    if (e.props.isErrored) return next(e)
+    const state = parseDescribed(e.props.text)
+    if (state === undefined) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const width = columnsOf(e.viewport) - 4
+    const { rows, hint } = cardRows(state)
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={state.isOn ? 'claude' : 'inactive'} paddingX={1} alignSelf="flex-start">
+        <Box flexDirection="row" gap={1}>
+          <Text bold>{STATUS_TEXT}</Text>
+          {state.isOn ? <Text color="success">on</Text> : <Text dimColor>off</Text>}
+        </Box>
+        {rows.map(([label, value]) => (
+          <Box flexDirection="row" gap={1}>
+            <Text dimColor>{label.padEnd(5)}</Text>
+            <Text wrap="truncate-end">{clip(value, Math.max(8, width - 6))}</Text>
+          </Box>
+        ))}
+        <Text dimColor wrap="truncate-end">
+          {clip(hint, Math.max(8, width))}
+        </Text>
+      </Box>
+    )
+  })
+
   if (!collapse) return
 
   // A finished tool call's row: one dim line, red when it failed. A running
@@ -87,7 +119,8 @@ export const register: Register = (on, options) => {
     if (isExpanded(p) || p.isRunning || !shouldFold(p.tool)) return next(e)
     if (!(await loadPrefs($)).isOn) return next(e)
     const { Box, Text } = $.ui.resolve(e)
-    const line = callLine(p)
+    // Two cells for the glyph, two spare for the transcript's own indent.
+    const line = fitCallLine(p, columnsOf(e.viewport) - 4)
     return (
       <Box>
         {p.isErrored && !p.isInterrupted ? (
@@ -114,7 +147,7 @@ export const register: Register = (on, options) => {
       return (
         <Box paddingLeft={2}>
           <Text color="error" wrap="truncate-end">
-            ⎿ {errorText(p.output)}
+            ⎿ {clip(errorText(p.output), columnsOf(e.viewport) - 6)}
           </Text>
         </Box>
       )
@@ -129,17 +162,33 @@ export const register: Register = (on, options) => {
     if (p.calls.some(c => !shouldFold(c.tool))) return next(e)
     if (!(await loadPrefs($)).isOn) return next(e)
     const { Box, Text } = $.ui.resolve(e)
+    const width = columnsOf(e.viewport) - 4
+    const line = fitGroupLine(p.calls, width)
     const failed = groupErrors(p.calls)
-    return (
-      <Box flexDirection="row">
-        <Text dimColor wrap="truncate-end">
-          · {groupLine(p.calls)}
-        </Text>
-        {failed === undefined ? null : (
-          <Text color="error" wrap="truncate-end">
-            {' '}· {failed}
+    // Side by side when both fit (a wide terminal), else the failures on a
+    // line of their own (a phone), each cut to the width.
+    if (failed === undefined || line.length + failed.length + 3 <= width) {
+      return (
+        <Box flexDirection="row">
+          <Text dimColor wrap="truncate-end">
+            · {line}
           </Text>
-        )}
+          {failed === undefined ? null : (
+            <Text color="error" wrap="truncate-end">
+              {' '}· {failed}
+            </Text>
+          )}
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column">
+        <Text dimColor wrap="truncate-end">
+          · {line}
+        </Text>
+        <Text color="error" wrap="truncate-end">
+          {'  '}✗ {clip(failed, width - 2)}
+        </Text>
       </Box>
     )
   })

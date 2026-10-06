@@ -4,7 +4,10 @@ import {
   countByStatus,
   describeTool,
   elapsedOf,
+  formatClock,
   formatElapsed,
+  inlineDeckText,
+  newestRunning,
   headerText,
   orderCards,
   parseCommand,
@@ -108,6 +111,9 @@ describe('cards', () => {
     expect(statusText(cards)).toBe('⚙ 2 agents running')
     expect(statusText(cards.slice(0, 2))).toBe('⚙ 1 agent running')
     expect(statusText([cards[0] as AgentDeckCard])).toBeUndefined()
+    expect(newestRunning(cards)?.key).toBe('b')
+    expect(statusText(cards, true)).toBe(`⚙ 2 · ${(cards[1] as AgentDeckCard).title}`)
+    expect(statusText([cards[0] as AgentDeckCard], true)).toBeUndefined()
     expect(headerText(cards)).toBe('2 running · 1 done · 1 failed')
     expect(headerText([])).toBe('No subagents yet')
   })
@@ -117,5 +123,24 @@ describe('cards', () => {
   test('elapsed ticks while running and stops once finished', () => {
     expect(elapsedOf(cards[1] as AgentDeckCard, 4_000)).toBe(3_000)
     expect(elapsedOf(cards[0] as AgentDeckCard, 60_000)).toBe(5_000)
+  })
+})
+
+describe('inline deck', () => {
+  test('a stamped markdown snapshot, running first', () => {
+    const at = new Date(2026, 0, 1, 9, 5, 7).getTime()
+    const text = inlineDeckText(
+      [
+        card({ key: 'x', status: 'done', title: 'Old', startedAt: at - 9_000, endedAt: at - 4_000, lastTool: 'Read a.ts' }),
+        card({ key: 'y', status: 'running', title: 'New', model: 'claude-haiku-4-5', startedAt: at - 3_000, currentTool: 'Grep "x"' }),
+      ],
+      at,
+    )
+    expect(formatClock(at)).toBe('09:05:07')
+    expect(text.split('\n')).toEqual([
+      'Agent deck · 1 running · 1 done · as of 09:05:07',
+      '- ● **New** · haiku 4.5 · Explore · 3s · ▸ Grep "x"',
+      '- ✓ **Old** · Explore · 5s · last Read a.ts',
+    ])
   })
 })

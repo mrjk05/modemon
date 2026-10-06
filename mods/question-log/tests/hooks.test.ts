@@ -30,7 +30,7 @@ async function readLog($: Engine): Promise<QuestionLogEntry[]> {
   })
   return JSON.parse(ran.text ?? '[]') as QuestionLogEntry[]
 }
-const SURFACES = ['terminal', 'desktop'] as const
+const SURFACES = ['terminal', 'desktop', 'mobile'] as const
 
 const REPLY = 'I fixed the relative path and the suite passes.\n\nShould I also add a regression test?'
 
@@ -307,4 +307,148 @@ test('/questions toggles the pane and /questions clear empties the log', withPro
   expect((await run('clear')).text).toBe('Question log cleared.')
   expect(await readLog($)).toHaveLength(0)
   expect((await run('bogus')).text).toBe('Usage: /questions [clear]')
+})
+
+/** Opens the pane undrawn, as a session whose surfaces place no panes answers. */
+function noPanes(on: On) {
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false as const, reason: 'the attached surfaces place no panes' } }))
+  on('ui.close', () => ({ value: undefined }))
+}
+
+async function seedLog($: Engine, on: On, clock: { advance: (ms: number) => Promise<unknown> }) {
+  on('tool.call', { tool: 'AskUserQuestion' }, () => ({
+    result: { questions: [], answers: { 'Which database?': 'Postgres' } },
+  }))
+  await $.tool.call({
+    tool: 'AskUserQuestion',
+    questions: [
+      {
+        question: 'Which database?',
+        header: 'DB',
+        multiSelect: false,
+        options: [
+          { label: 'Postgres', description: '' },
+          { label: 'SQLite', description: '' },
+        ],
+      },
+    ],
+  })
+  await clock.advance(5 * 60_000)
+  await endTurn($, REPLY, 't1')
+}
+
+test('/questions answers inline when the pane cannot be placed', async ($, on) => {
+  const { clock } = world(on)
+  noPanes(on)
+  await seedLog($, on, clock)
+  const ran = await $.command.run({
+    command: 'questions',
+    args: '',
+    origin: { kind: 'bridge' },
+    presentation: { isFullscreen: false, columns: 40 },
+  })
+  expect(ran.text).toStartWith('Question log (no pane here, shown inline):')
+  expect(ran.text).toContain('2 questions · 1 open')
+  // Open first, then the answered one with its answer.
+  const text = ran.text ?? ''
+  expect(text.indexOf('regression test?')).toBeLessThan(text.indexOf('Which database?'))
+  expect(text).toContain('↳ Postgres')
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({
+      plugin: PLUGIN,
+      surface,
+      component: 'CommandOutput',
+      props: { command: 'questions', args: '', text, isErrored: false },
+      viewport: { columns: 40, rows: 30, isFullscreen: false },
+    })
+    expect(await ui.find({ type: 'Text', text: '2 questions · 1 open' })).toBeDefined()
+    const rows = await ui.findAll({ type: 'Text', text: /^(\[DB\] Which database\?|Should I also add a regression test\?)$/ })
+    expect(rows.map(one => one.text)).toEqual(['Should I also add a regression test?', '[DB] Which database?'])
+    expect((await ui.find({ type: 'Text', text: /^Should I also add a regression test\?$/ }))?.props.color).toBe('yellow')
+    expect(await ui.find({ type: 'Text', text: '↳ Postgres' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the inline log keeps open questions first and caps the list', async ($, on) => {
+  world(on)
+  noPanes(on)
+  for (let i = 0; i < 25; i++) {
+    await endTurn($, `Step ${i} done.\n\nShall I go on with step ${i + 1}?`, `t${i}`)
+    if (i < 24) await $.prompt.submit({ text: `yes ${i}`, wait: false, origin: { kind: 'composer' } })
+  }
+  const ran = await $.command.run({
+    command: 'questions',
+    args: '',
+    origin: { kind: 'bridge' },
+    presentation: { isFullscreen: false, columns: 40 },
+  })
+  const ui = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: 'mobile',
+    component: 'CommandOutput',
+    props: { command: 'questions', args: '', text: ran.text ?? '', isErrored: false },
+    viewport: { columns: 40, rows: 30, isFullscreen: false },
+  })
+  expect(await ui.find({ type: 'Text', text: '25 questions · 1 open' })).toBeDefined()
+  const rows = await ui.findAll({ type: 'Text', text: /^Shall I go on/ })
+  expect(rows).toHaveLength(20)
+  expect(rows[0]?.text).toBe('Shall I go on with step 25?')
+  expect(rows[1]?.text).toBe('Shall I go on with step 24?')
+  expect(await ui.find({ type: 'Text', text: '5 older not shown' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('mobile draws /questions inline even where a pane opened elsewhere', async ($, on) => {
+  const { clock } = world(on)
+  on('ui.render', { component: 'CommandOutput' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return h(Text, {}, e.props.text) as RenderElement
+  })
+  await seedLog($, on, clock)
+  const props: RenderPropsOf['CommandOutput'] = {
+    command: 'questions',
+    args: '',
+    text: 'Question log opened.',
+    isErrored: false,
+  }
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'CommandOutput', props })
+    expect(await ui.find({ type: 'Text', text: 'Question log opened.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '2 questions' })).toBeUndefined()
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'mobile', component: 'CommandOutput', props })
+  expect(await ui.find({ type: 'Text', text: '2 questions · 1 open' })).toBeDefined()
+  await ui.unmount()
+
+  // `/questions clear` and other commands' rows pass through on every surface.
+  for (const surface of SURFACES) {
+    const cleared = await $.ui.mount({
+      plugin: PLUGIN,
+      surface,
+      component: 'CommandOutput',
+      props: { ...props, args: 'clear', text: 'Question log cleared.' },
+    })
+    expect(await cleared.find({ type: 'Text', text: 'Question log cleared.' })).toBeDefined()
+    await cleared.unmount()
+    const other = await $.ui.mount({
+      plugin: PLUGIN,
+      surface,
+      component: 'CommandOutput',
+      props: { ...props, command: 'cost', text: 'Total cost: $0.12' },
+    })
+    expect(await other.find({ type: 'Text', text: 'Total cost' })).toBeDefined()
+    await other.unmount()
+  }
+})
+
+test('the status line counts open questions for every surface', async ($, on) => {
+  const { statuses } = world(on)
+  await endTurn($, REPLY, 't1')
+  await endTurn($, 'Done.\n\nWant me to push the branch?', 't2')
+  expect(statuses[statuses.length - 1]).toBe('? 2 open')
 })

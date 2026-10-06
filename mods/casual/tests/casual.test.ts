@@ -6,15 +6,22 @@ import {
   SECTION_ID,
   applyAction,
   callLine,
+  clipStart,
+  fitCallLine,
+  fitGroupLine,
   groupErrors,
   groupLine,
   outcome,
   parseArgs,
+  parseDescribed,
   stylePrompt,
   toPrefs,
 } from '../hooks/lib'
 
-const SURFACES = ['terminal', 'desktop'] as const
+const SURFACES = ['terminal', 'desktop', 'mobile'] as const
+
+/** A phone held upright: 40 cells across. */
+const PHONE = { columns: 40, rows: 30, isFullscreen: false }
 
 /** What the plugin wrote beneath it: its store and its status line. */
 type Seen = { store: Record<string, unknown>; status: Array<string | undefined> }
@@ -137,6 +144,59 @@ describe('/casual', () => {
     expect(bad.text).toContain('Usage')
   })
 
+  test('shows the ☺ casual status when the session starts on the phone', async ($, on) => {
+    const seen = engine(on)
+    await $.session.start({ ...START, surface: 'mobile' })
+    expect(seen.status).toEqual(['☺ casual'])
+  })
+
+  test('/casual status draws a compact card on every surface', async ($, on) => {
+    engine(on)
+    const { text } = await $.command.run(casual('brief'))
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({
+        plugin: 'casual',
+        surface,
+        component: 'CommandOutput',
+        viewport: PHONE,
+        props: { command: 'casual', args: 'status', text: text ?? '', isErrored: false },
+      })
+      expect(await ui.drawn()).toMatchObject({ type: 'Box', props: { borderStyle: 'round' } })
+      expect(await ui.find({ type: 'Text', text: '☺ casual' })).toBeDefined()
+      expect((await ui.find({ type: 'Text', text: 'on' }))?.props.color).toBe('success')
+      expect(await ui.find({ type: 'Text', text: /brief · 1-2 sentences/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'folded' })).toBeDefined()
+      for (const t of await ui.findAll({ type: 'Text' })) expect(t.text.length).toBeLessThanOrEqual(36)
+      expect(await ui.find({ text: /ENGINE/ })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
+  test('the card says off, and a usage line is left to the engine', async ($, on) => {
+    engine(on)
+    const off = await $.command.run(casual('off'))
+    const bad = await $.command.run(casual('loud'))
+    for (const surface of SURFACES) {
+      const card = await $.ui.mount({
+        plugin: 'casual',
+        surface,
+        component: 'CommandOutput',
+        props: { command: 'casual', args: 'off', text: off.text ?? '', isErrored: false },
+      })
+      expect((await card.find({ type: 'Text', text: 'off' }))?.props.dimColor).toBe(true)
+      expect(await card.find({ type: 'Text', text: /\/casual on/ })).toBeDefined()
+      const usage = await $.ui.mount({
+        plugin: 'casual',
+        surface,
+        component: 'CommandOutput',
+        props: { command: 'casual', args: 'loud', text: bad.text ?? '', isErrored: false },
+      })
+      expect(await usage.find({ text: 'ENGINE CommandOutput' })).toBeDefined()
+      await card.unmount()
+      await usage.unmount()
+    }
+  })
+
   test('starts from what the store kept', async ($, on) => {
     const seen = engine(on, { prefs: { isOn: false } })
     await $.session.start(START)
@@ -147,7 +207,7 @@ describe('/casual', () => {
 })
 
 describe('collapsed tool rows', () => {
-  test('a finished ToolUse is one dim line on terminal and desktop', async ($, on) => {
+  test('a finished ToolUse is one dim line on every surface', async ($, on) => {
     engine(on)
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: 'casual', surface, component: 'ToolUse', props: TOOL_USE })
@@ -235,6 +295,40 @@ describe('collapsed tool rows', () => {
     }
   })
 
+  test('rows fit a 40-column phone: paths keep their file name', async ($, on) => {
+    engine(on)
+    const longPath = '/Users/someone/projects/modemon/mods/casual/hooks/register.tsx'
+    const read = {
+      ...TOOL_USE,
+      tool: 'Read',
+      input: { file_path: longPath },
+      output: { type: 'text', file: { filePath: longPath, numLines: 146 } },
+    }
+    const bash = { ...TOOL_USE, input: { command: `npm run build -- --filter casual --verbose --no-cache ${'x'.repeat(40)}` } }
+    const wide = { ...GROUP, calls: [...GROUP.calls, ...GROUP.calls.map(c => ({ ...c, tool: `${c.tool}Notebook` }))] }
+    for (const surface of SURFACES) {
+      const r = await $.ui.mount({ plugin: 'casual', surface, component: 'ToolUse', viewport: PHONE, props: read })
+      const rText = (await r.find({ type: 'Text', text: /Read/ }))?.text ?? ''
+      expect(rText.length).toBeLessThanOrEqual(38)
+      expect(rText).toMatch(/^· Read …\S*register\.tsx · 146 lines$/)
+
+      const b = await $.ui.mount({ plugin: 'casual', surface, component: 'ToolUse', viewport: PHONE, props: bash })
+      const bText = (await b.find({ type: 'Text', text: /Bash/ }))?.text ?? ''
+      expect(bText.length).toBeLessThanOrEqual(38)
+      expect(bText).toMatch(/^· Bash npm run build.*… · 2 lines$/)
+
+      const g = await $.ui.mount({ plugin: 'casual', surface, component: 'ToolGroup', viewport: PHONE, props: wide })
+      expect(await g.drawn()).toMatchObject({ type: 'Box', props: { flexDirection: 'column' } })
+      const lines = await g.findAll({ type: 'Text' })
+      expect(lines.map(l => l.text)).toEqual([
+        expect.stringMatching(/^· ran 8 tools \(Read ×2, .*…\)$/),
+        expect.stringMatching(/^  ✗ 2 failed: Grep "foo", GrepNote/),
+      ])
+      for (const l of lines) expect(l.text.length).toBeLessThanOrEqual(38)
+      for (const ui of [r, b, g]) await ui.unmount()
+    }
+  })
+
   test('a row that says it is expanded is untouched', async ($, on) => {
     engine(on)
     for (const surface of SURFACES) {
@@ -285,6 +379,18 @@ describe('helpers', () => {
     ).toBe('+2 −1')
     expect(groupLine(GROUP.calls)).toBe('ran 4 tools (Read ×2, Grep, Edit)')
     expect(groupErrors(GROUP.calls)).toBe('1 failed: Grep "foo"')
+  })
+
+  test('fits lines to a width', () => {
+    expect(fitCallLine(TOOL_USE, 100)).toBe('Bash npm test · 2 lines')
+    expect(fitCallLine({ ...TOOL_USE, input: { file_path: '/a/b/c/d/e/f/g/file.ts' } }, 24)).toBe('Bash …/file.ts · 2 lines')
+    expect(fitCallLine({ ...TOOL_USE, input: {} }, 10)).toBe('Bash · 2 …')
+    expect(fitGroupLine(GROUP.calls, 100)).toBe('ran 4 tools (Read ×2, Grep, Edit)')
+    expect(fitGroupLine(GROUP.calls, 30)).toBe('ran 4 tools (Read ×2, Grep, …)')
+    expect(fitGroupLine(GROUP.calls, 12)).toBe('ran 4 tools')
+    expect(clipStart('abcdef', 4)).toBe('…def')
+    expect(parseDescribed('casual is on (brief, tool rows folded). x')).toEqual({ isOn: true, verbosity: 'brief', isFolding: true })
+    expect(parseDescribed('Unknown option')).toBeUndefined()
   })
 
   test('the style prompt keeps safety and precision', () => {

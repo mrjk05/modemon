@@ -319,3 +319,61 @@ export function findFlagged(
   }
   return undefined
 }
+
+/** How many entries the inline log (`/questions` where no pane is drawn) shows at most. */
+export const INLINE_CAP = 20
+
+/** The first line of `/questions`' text when the pane could not be placed: the inline log follows. */
+export const INLINE_HEAD = 'Question log (no pane here, shown inline):'
+
+/**
+ * What the inline log shows: of the last `cap` entries, the open ones first
+ * (oldest first, the order they were asked), then the answered ones newest
+ * first; `hidden` counts the older entries left out.
+ */
+export function inlineSelection(
+  log: readonly QuestionLogEntry[],
+  cap = INLINE_CAP,
+): { open: QuestionLogEntry[]; answered: QuestionLogEntry[]; hidden: number; openTotal: number } {
+  const recent = log.slice(-cap)
+  const open = recent.filter(entry => entry.answer === undefined)
+  const answered = recent.filter(entry => entry.answer !== undefined).reverse()
+  return { open, answered, hidden: log.length - recent.length, openTotal: openCount(log) }
+}
+
+/** One entry's questions on one line: `[Header] text` joined by ` · `. */
+export function questionLine(entry: QuestionLogEntry, max = 200): string {
+  const text = entry.questions
+    .map(question => `${question.header !== undefined ? `[${question.header}] ` : ''}${question.text}`)
+    .join(' · ')
+  return snippet(text, max)
+}
+
+/** The inline log's summary line: `3 questions · 1 open`. */
+export function summaryLine(log: readonly QuestionLogEntry[]): string {
+  const open = openCount(log)
+  return `${log.length} question${log.length === 1 ? '' : 's'}${open > 0 ? ` · ${open} open` : ''}`
+}
+
+/** Escapes what markdown would read as formatting in a logged text. */
+function mdEscape(text: string): string {
+  return text.replace(/([\\`*_[\]<>#|])/g, '\\$1')
+}
+
+/**
+ * The inline log as markdown: the `/questions` output text where no pane is
+ * drawn, which any surface (and the transcript) shows even when no render
+ * hook draws it as a tree.
+ */
+export function inlineMarkdown(log: readonly QuestionLogEntry[], now: number, cap = INLINE_CAP): string {
+  if (log.length === 0) return `${INLINE_HEAD}\n\nNo questions yet.`
+  const { open, answered, hidden } = inlineSelection(log, cap)
+  const lines = [INLINE_HEAD, '', `**${summaryLine(log)}**`, '']
+  for (const entry of open) lines.push(`- ❓ ${mdEscape(questionLine(entry))} _(${relativeTime(entry.at, now)})_`)
+  for (const entry of answered) {
+    lines.push(`- ✓ ${mdEscape(questionLine(entry))} _(${relativeTime(entry.at, now)})_`)
+    lines.push(`  ↳ ${mdEscape(snippet(entry.answer ?? '', 120))}`)
+  }
+  if (hidden > 0) lines.push('', `_${hidden} older not shown_`)
+  return lines.join('\n')
+}

@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { RenderPropsOf } from 'claude-code'
 
-const SURFACES = ['terminal', 'desktop'] as const
+const SURFACES = ['terminal', 'desktop', 'mobile'] as const
 const PANE = 'agent-deck'
 const PANE_PROPS: RenderPropsOf['Pane'] = {
   title: 'Agents',
@@ -198,4 +198,134 @@ test('does not open by itself on the main screen, where a pane is no sidebar', a
     fork: false,
   })
   expect(opened).toEqual([])
+})
+
+const AT_160 = { isFullscreen: true, columns: 160 }
+
+test('/agents answers inline, live, when the pane cannot be placed', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false as const, reason: 'no attached surface places panes' } }))
+  on('agent.spawn', (_$, e) => ({ model: 'claude-haiku-4-5', agentId: `agent-${e.tool_use_id}` }))
+  await $.agent.spawn({
+    tool_use_id: 'toolu_a',
+    prompt: 'Find where the JWT is verified',
+    description: 'Find auth middleware',
+    subagentType: 'Explore',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+  })
+  await clock.advance(2_000)
+
+  const ran = await $.command.run({ command: 'agents', args: '', origin: { kind: 'composer' }, presentation: AT_160 })
+  const text = ran.text ?? ''
+  expect(text.startsWith('Agent deck ·')).toBe(true)
+  expect(text).toMatch(/as of \d\d:\d\d:\d\d/)
+  expect(text).toMatch(/Find auth middleware\*\* · haiku 4\.5 · Explore · 2s/)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({
+      plugin: 'agent-deck',
+      surface,
+      component: 'CommandOutput',
+      props: { command: 'agents', args: '', text, isErrored: false },
+      viewport: { columns: 40, rows: 60, isFullscreen: false },
+    })
+    expect(await ui.find({ type: 'Text', text: /Agents · 1 running/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^as of \d\d:\d\d:\d\d$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Find auth middleware/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /haiku 4\.5 · Explore/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^2s$/ })).toBeDefined()
+
+    if (surface === 'mobile') {
+      // The row reads the cards from $.state, so it redraws as they change.
+      await $.agent.spawn({
+        tool_use_id: 'toolu_b',
+        prompt: 'Write tests',
+        description: 'Write unit tests',
+        subagentType: 'general-purpose',
+        provider: { plugin: 'engine', tier: 'core' },
+        parentModel: 'claude-opus-5-5',
+        background: true,
+        fork: false,
+      })
+      expect(await ui.find({ type: 'Text', text: /Write unit tests/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Agents · 2 running/ })).toBeDefined()
+    }
+    await ui.unmount()
+  }
+})
+
+test('/agents asked from the phone answers inline and opens no pane', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const opened: string[] = []
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.surfaces', () => ({ value: ['terminal', 'mobile'] as const }))
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true as const } }
+  })
+  const fromPhone = await $.command.run({
+    command: 'agent-deck',
+    args: '',
+    origin: { kind: 'bridge' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(fromPhone.text ?? '').toMatch(/^Agent deck · No subagents yet · as of/)
+  expect(opened).toEqual([])
+
+  // Typed at the terminal of the same session, it opens the pane.
+  const typed = await $.command.run({ command: 'agent-deck', args: '', origin: { kind: 'composer' }, presentation: AT_160 })
+  expect(typed.text).toBe('Agent deck opened.')
+  expect(opened).toEqual([PANE])
+})
+
+test('another command\'s output row is left alone', async ($, on) => {
+  on('ui.render', { component: 'CommandOutput' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return Text({ children: `engine: ${e.props.text}` })
+  })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({
+      plugin: 'agent-deck',
+      surface,
+      component: 'CommandOutput',
+      props: { command: 'agents', args: 'clear', text: 'No finished agents to clear.', isErrored: false },
+      viewport: { columns: 40, rows: 60 },
+    })
+    expect(await ui.find({ type: 'Text', text: /^engine: No finished/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('with a phone attached, the status line names the newest running agent', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const statuses: (string | undefined)[] = []
+  on('ui.status', (_$, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  on('session.surfaces', () => ({ value: ['mobile'] as const }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-4-5', agentId: 'agent-p' }))
+  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
+  await $.session.attach({ surface: 'mobile', clientId: 'phone' })
+  await $.agent.spawn({
+    tool_use_id: 'toolu_p',
+    prompt: 'Find where the JWT is verified',
+    description: 'Find auth middleware',
+    subagentType: 'Explore',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+  })
+  expect(statuses.at(-1)).toBe('⚙ 1 · Find auth middleware')
+
+  // Asked from the phone, /agents answers inline whatever the panes.
+  const ran = await $.command.run({ command: 'agents', args: '', origin: { kind: 'bridge' }, presentation: AT_160 })
+  expect(ran.text ?? '').toMatch(/^Agent deck · 1 running · as of/)
 })

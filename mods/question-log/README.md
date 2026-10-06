@@ -5,7 +5,7 @@ Makes it obvious when Claude is waiting on you, and keeps a log of every questio
 - **Captures AskUserQuestion**: each dialog's questions, headers and options, and what you chose. Multi-select answers are comma-joined, and text typed under "Other" is logged as `Other: "..."`.
 - **Detects questions in replies**: when a reply's final paragraph asks you something ("Should I also add a test?"), it is logged as an open question. Your next prompt answers it, and its first 200 characters are kept as the answer.
 - **Highlight**: a reply detected as a question is drawn in a round, coloured box with a `? Question for you` header. The box is yellow while the question is open and magenta once you have answered.
-- **Log pane**: `/questions` lists every question in order (newest at the bottom). Open ones are highlighted, answers are indented under their question, and each has a relative timestamp.
+- **Log pane**: `/questions` lists every question in order (newest at the bottom). Open ones are highlighted, answers are indented under their question, and each has a relative timestamp. Where no pane can be drawn (the mobile app, an older desktop, a narrow terminal) the log is shown inline as the command's output instead.
 - **Status line**: `? 2 open` under the prompt while anything is unanswered. It clears at zero.
 
 ## Install
@@ -50,11 +50,26 @@ The `/questions` pane:
   ? 1 open
 ```
 
+## Surfaces
+
+Works on the terminal, the desktop app's Code tab and the Claude mobile app (watching a cloud or Remote Control session).
+
+| | Terminal | Desktop | Mobile |
+| --- | --- | --- | --- |
+| Question highlight box | yes | yes | yes (Box, Text and Markdown only) |
+| `/questions` log pane | yes | yes | no: mobile draws no panes |
+| `/questions` inline log | when the pane can't be placed | when the pane can't be placed | always |
+| `? 2 open` status line | yes | yes | yes |
+
+The inline log is compact: a `3 questions · 1 open` summary, then the open questions (oldest first), then the answered ones (newest first) with their answers, out of the last 20 entries. Older entries are counted (`5 older not shown`). Lines are cut to the width of the screen. The command's text is the same log as markdown, so a surface that draws the row itself still shows it.
+
+On mobile, `/questions` in a session whose terminal has the pane open still closes it there, and the phone shows the log inline.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `/questions` | Opens the log pane, or closes it if it is already open |
+| `/questions` | Opens the log pane, or closes it if it is already open. Shows the log inline where no pane can be drawn |
 | `/questions clear` | Empties the log and clears the status line |
 
 ## Config
@@ -88,6 +103,7 @@ Subagent turns and interrupted turns are ignored. A slash command, or a prompt t
 - Rows are matched to log entries by their transcript id where it is known, and otherwise by a hash of the reply's text. Two replies with identical text are both boxed.
 - The AskUserQuestion dialog itself is left alone: its render props carry only the questions, so there is no safe way to add an accent without redrawing the engine's dialog.
 - The log lives in session state. It survives hot reloads, is emptied by `/clear`, and is not kept across sessions. It holds the last 200 entries.
+- The inline log is drawn from the log as it is now, so an earlier `/questions` row shows the current log, not the log when it ran.
 - Relative timestamps in the pane refresh whenever the log changes, not on a timer.
 - Built against Claude Code 2.1.290. The mods API is early access and may change between releases.
 

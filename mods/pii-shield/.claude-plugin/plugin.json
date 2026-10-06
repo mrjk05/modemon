@@ -1,6 +1,6 @@
 {
   "name": "pii-shield",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Masks emails, names, account numbers and secrets on screen while you screen-record. Display only: the model and the transcript keep the real values.",
   "author": { "name": "mrjk05" },
   "license": "MIT",

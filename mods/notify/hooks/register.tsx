@@ -10,12 +10,17 @@ import {
   doneBody,
   errorBody,
   isNeedsInput,
+  isStatusText,
   needsInputBody,
+  ntfyRequest,
+  ntfyTarget,
   parseBundleId,
   parseCommand,
   parseFrontAsn,
   platformFromUname,
   readConfig,
+  shouldPush,
+  statusMarkdown,
   subagentBody,
   terminalBundle,
   titleFor,
@@ -37,6 +42,7 @@ const agentsNotified = new Set<string>()
 let platform: Platform | undefined
 let backend: Backend | undefined
 let lastError: string | undefined
+let lastNtfy: string | undefined
 let bundle: { id: string | undefined } | undefined
 
 async function getPlatform($: $): Promise<Platform> {
@@ -124,6 +130,31 @@ async function send($: $, note: Note): Promise<Sent> {
   return { isSent: false, reason: lastError ?? 'no notifier worked' }
 }
 
+type Pushed = { isSent: true; status: number } | { isSent: false; reason: string }
+
+/** POSTs the note to the configured ntfy topic through `$.http.fetch`. Never throws. */
+async function push($: $, kind: Kind, note: Note): Promise<Pushed> {
+  const target = ntfyTarget(config.ntfyServer, config.ntfyTopic)
+  if ('error' in target) return { isSent: false, reason: target.error }
+  const req = ntfyRequest(target.url, kind, note)
+  try {
+    const r = await $.http.fetch(req.url, req.init)
+    if (r.ok) {
+      lastNtfy = `delivered (HTTP ${r.status})`
+      return { isSent: true, status: r.status }
+    }
+    const why = `HTTP ${r.status}${r.text.trim() ? `: ${r.text.trim().slice(0, 160)}` : ''}`
+    lastNtfy = `failed, ${why}`
+    return { isSent: false, reason: why }
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err)
+    lastNtfy = `failed, ${why}`
+    return { isSent: false, reason: why }
+  }
+}
+
+const hasNtfy = (): boolean => config.ntfyTopic !== ''
+
 async function isMuted($: $): Promise<boolean> {
   try {
     const { value } = await $.state.get(muted)
@@ -141,13 +172,36 @@ async function notify($: $, kind: Kind, body: string): Promise<void> {
   if (await isMuted($)) return
   if (!throttle.allow(kind, await $.clock.now())) return
   $.clock.after(0, () => {
-    void deliver($, body).catch(() => undefined)
+    void deliver($, kind, body).catch(() => undefined)
   })
 }
 
-async function deliver($: $, body: string): Promise<void> {
-  if (config.onlyWhenUnfocused && (await isTerminalFrontmost($))) return
-  await send($, await buildNote($, body))
+/**
+ * Desktop first, then the phone; each in its own try, so one failing never
+ * stops the other. See `shouldPush` for when the phone push is skipped.
+ */
+async function deliver($: $, kind: Kind, body: string): Promise<void> {
+  const note = await buildNote($, body)
+  const needsFocus = config.onlyWhenUnfocused || (hasNtfy() && config.ntfyOnlyWhenAway)
+  let isFocused = false
+  if (needsFocus) {
+    try {
+      isFocused = await isTerminalFrontmost($)
+    } catch {
+      isFocused = false
+    }
+  }
+  let desktop: 'sent' | 'skipped' | 'failed'
+  if (config.onlyWhenUnfocused && isFocused) {
+    desktop = 'skipped'
+  } else {
+    try {
+      desktop = (await send($, note)).isSent ? 'sent' : 'failed'
+    } catch {
+      desktop = 'failed'
+    }
+  }
+  if (hasNtfy() && shouldPush(config.ntfyOnlyWhenAway, isFocused, desktop)) await push($, kind, note)
 }
 
 /** Runs `fn`, swallowing anything it throws: a notification never breaks a hook. */
@@ -182,6 +236,7 @@ export const register: Register = (on, options) => {
   platform = undefined
   backend = undefined
   lastError = undefined
+  lastNtfy = undefined
   bundle = undefined
 
   // --- commands -----------------------------------------------------------
@@ -190,7 +245,7 @@ export const register: Register = (on, options) => {
     await quietly(async () => {
       await $.command.register({
         name: 'notify',
-        description: 'Desktop notifications: test, on, off, status.',
+        description: 'Desktop and phone (ntfy) notifications: test, on, off, status.',
         argumentHint: '[test|on|off|status]',
         immediate: true,
       })
@@ -206,31 +261,79 @@ export const register: Register = (on, options) => {
       return { text: cmd === 'off' ? 'notify: muted for this session.' : 'notify: on.' }
     }
     if (cmd === 'test') {
-      const sent = await send($, await buildNote($, 'Test notification: notify is working.'))
-      return {
-        text: sent.isSent
-          ? `notify: sent a test notification via ${sent.backend}.`
-          : `notify: could not send (${sent.reason}).`,
+      const note = await buildNote($, 'Test notification: notify is working.')
+      let desktop: string
+      try {
+        const sent = await send($, note)
+        desktop = sent.isSent ? `sent via ${sent.backend}` : `could not send (${sent.reason})`
+      } catch (err) {
+        desktop = `could not send (${err instanceof Error ? err.message : String(err)})`
       }
+      const lines = [`notify: desktop ${desktop}.`]
+      if (hasNtfy()) {
+        const pushed = await push($, 'test', note)
+        lines.push(
+          pushed.isSent
+            ? `notify: phone push sent via ntfy (HTTP ${pushed.status}).`
+            : `notify: phone push failed (${pushed.reason}).`,
+        )
+      } else {
+        lines.push('notify: phone push off (set ntfyTopic to turn it on).')
+      }
+      return { text: lines.join('\n') }
     }
     const p = await getPlatform($)
     const front = p === 'darwin' ? await getBundle($) : undefined
-    const lines = [
-      `notify: ${(await isMuted($)) ? 'muted for this session' : 'on'}`,
-      `platform: ${p}; backend: ${backend ?? `not chosen yet (tries ${backendsFor(p).join(', ') || 'none'})`}`,
-      ...(lastError !== undefined ? [`last failure: ${lastError}`] : []),
-      `needs input: ${config.onNeedsInput}; turn done (> ${config.minTurnSeconds}s): ${config.onTurnDone}; errors: ${config.onError}; subagents: ${config.onSubagentDone}`,
-      `sound: ${config.sound || '(none)'}; only when unfocused: ${config.onlyWhenUnfocused}${
-        config.onlyWhenUnfocused
-          ? p === 'darwin'
-            ? front !== undefined
-              ? ` (terminal ${front})`
-              : ' (terminal app unknown, always notifies)'
-            : ' (focus not readable here, always notifies)'
-          : ''
-      }`,
-    ]
-    return { text: lines.join('\n') }
+    const focus =
+      p === 'darwin'
+        ? front !== undefined
+          ? `terminal ${front}`
+          : 'terminal app unknown, always notifies'
+        : 'focus not readable here, always notifies'
+    const text = statusMarkdown({
+      isMuted: await isMuted($),
+      platform: p,
+      backend,
+      lastError,
+      focus,
+      lastNtfy,
+      config,
+    })
+    return { text }
+  })
+
+  // Status drawn as a card: a coloured headline over the Markdown bullets.
+  // Mobile and narrow rows get no border, so the text keeps the full width.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'notify' } }, async ($, e, next) => {
+    if (e.props.isErrored || !isStatusText(e.props.text)) return next(e)
+    const { Box, Text, Markdown } = $.ui.resolve(e)
+    const [headline = '', ...rest] = e.props.text.split('\n')
+    const isMutedRow = headline.includes('muted')
+    const columns = e.viewport?.columns ?? 80
+    const isCompact = e.surface === 'mobile' || columns < 60
+    const title = headline.replace(/\*\*/g, '')
+    const body = rest.join('\n').trim()
+    return isCompact ? (
+      <Box flexDirection="column">
+        <Text bold color={isMutedRow ? 'yellow' : 'green'}>
+          {`🔔 ${title}`}
+        </Text>
+        <Markdown text={body} />
+      </Box>
+    ) : (
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={isMutedRow ? 'yellow' : 'green'}
+        paddingX={1}
+        width={Math.min(columns, 100)}
+      >
+        <Text bold color={isMutedRow ? 'yellow' : 'green'}>
+          {`🔔 ${title}`}
+        </Text>
+        <Markdown text={body} />
+      </Box>
+    )
   })
 
   // --- needs input --------------------------------------------------------

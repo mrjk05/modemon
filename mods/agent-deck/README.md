@@ -44,6 +44,33 @@ While any subagent runs, a status line under the prompt reads `⚙ 2 agents runn
 
 On the desktop app the same cards are drawn as bordered boxes coloured by status.
 
+## Surfaces: terminal, desktop and mobile
+
+| Surface | What you get |
+| --- | --- |
+| Terminal | The side pane (docked in the fullscreen layout, inline above the prompt on the main screen) and the status line. |
+| Desktop (Code tab) | The same pane, with each card a bordered box coloured by status. |
+| Claude mobile app | No pane: the phone never docks one. `/agents` (or `/agent-deck`) answers **inline**, as compact cards in the command's output row, and the status line names the newest running agent. |
+
+The inline deck is used whenever the pane cannot be shown: `/agents` sent from the phone (a Remote Control message while the mobile app is attached, or a session only phones are watching), or `$.ui.open` answering `isPlaced: false` because no attached surface places panes. Each compact card fits the screen's width:
+
+```
+Agents · 2 running · 1 done
+as of 14:03:27
+
+● Find auth middleware        1m 12s
+  haiku 4.5 · Explore
+  ▸ Grep "verifyJwt"
+
+✓ Summarise README               21s
+  haiku 4.5 · Explore
+  last Read README.md
+```
+
+- **Live, with a stamp.** The row reads the cards from `$.state`, which subscribes it, so it redraws as agents start, call tools and finish, and ticks every second while any run. `as of HH:MM:SS` is when the cards last changed. The text behind the row (what the model reads, and what a surface shows if it draws the plain text) is a snapshot taken when you ran the command, stamped the same way. Every inline deck row in the transcript shows the current deck, not the deck at the time it was asked.
+- **Status line on the phone.** While the mobile app is attached, the status line switches from `⚙ 2 agents running` to a short variant naming the newest running agent: `⚙ 2 · Find auth middleware` (title cut to 24 characters). It switches back when the phone detaches.
+- Every tree uses only `Box` and `Text`, which every surface draws.
+
 ## Install
 
 ```
@@ -56,7 +83,7 @@ Answer `y` to add the marketplace, then pick a scope.
 
 | Command | What it does |
 | --- | --- |
-| `/agents` | Toggle the pane |
+| `/agents` | Toggle the pane (on the phone: show the deck inline) |
 | `/agents open` / `/agents close` | Open or close it |
 | `/agents clear` | Remove finished (done and failed) cards |
 | `/agent-deck [clear\|open\|close]` | The same, under the mod's own name |
@@ -70,7 +97,7 @@ Set these in `/config` (or under `pluginConfigs["agent-deck"].options` in settin
 | Option | Default | What it does |
 | --- | --- | --- |
 | `autoOpen` | `true` | Open the deck when the first subagent spawns (sidebar layouts only) |
-| `statusLine` | `true` | Show `⚙ N agents running` while subagents run |
+| `statusLine` | `true` | Show `⚙ N agents running` while subagents run (`⚙ N · <newest title>` with a phone attached) |
 
 ## How it works
 
@@ -88,4 +115,7 @@ Set these in `/config` (or under `pluginConfigs["agent-deck"].options` in settin
 - Agents launched remotely (`isolation: "remote"`) are marked done with the note "running in the cloud", because their progress is not visible to the session.
 - A subagent's tool calls are only counted from when the mod is loaded. Cards for agents found only through `$.agent.list()` start with no prompt summary and no tool history.
 - Teammates (named agents that idle between turns) show as done between turns and switch back to running when they call a tool again.
+- The command cannot tell which screen typed it: a Remote Control (`bridge`) message with the mobile app attached counts as the phone. A message from a web client while a phone is also attached is answered inline too.
+- The status line is one line for every surface, so with a phone attached the terminal shows the phone's variant as well.
+- `/agents clear` and `/agents close` work from the phone; `close` closes the pane on the terminal or desktop, if one is open.
 - Built against Claude Code 2.1.290. The mods API is early access and may change between releases.

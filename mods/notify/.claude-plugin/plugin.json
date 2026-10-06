@@ -1,8 +1,10 @@
 {
   "name": "notify",
-  "version": "0.1.0",
-  "description": "Native desktop notifications when Claude needs your input, finishes a long turn, hits an error, or a subagent finishes.",
-  "author": { "name": "mrjk05" },
+  "version": "0.2.0",
+  "description": "Desktop notifications, plus optional phone push via ntfy, when Claude needs your input, finishes a long turn, hits an error, or a subagent finishes.",
+  "author": {
+    "name": "mrjk05"
+  },
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -46,6 +48,25 @@
       "type": "boolean",
       "title": "Only when the terminal is in the background",
       "description": "macOS: skip notifications while your terminal app is the frontmost app. Ignored where focus cannot be read.",
+      "default": true
+    },
+    "ntfyTopic": {
+      "type": "string",
+      "title": "ntfy topic (phone push)",
+      "description": "Topic to publish to; empty turns phone push off. Anyone who knows it can read your notifications, so use a long random name.",
+      "default": "",
+      "sensitive": true
+    },
+    "ntfyServer": {
+      "type": "string",
+      "title": "ntfy server",
+      "description": "Base URL of the ntfy server (self-hosted or the public one).",
+      "default": "https://ntfy.sh"
+    },
+    "ntfyOnlyWhenAway": {
+      "type": "boolean",
+      "title": "Phone push only when away",
+      "description": "Skip the phone push while your terminal is the frontmost app (macOS). Where focus cannot be read (Linux, cloud sessions) every notification also goes to your phone.",
       "default": true
     }
   }

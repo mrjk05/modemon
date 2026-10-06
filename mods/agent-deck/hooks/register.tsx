@@ -17,6 +17,7 @@ import type {
   CommandRunInput,
   CommandRunResult,
   EngineInterface,
+  RenderSurface,
   PluginOptions,
   Register,
   RenderViewport,
@@ -28,13 +29,19 @@ import type { AgentDeckCard, AgentDeckStatus } from '../types'
 import {
   describeTool,
   elapsedOf,
+  formatClock,
   formatElapsed,
   headerText,
+  INLINE_HEAD,
+  inlineDeckText,
+  metaLine,
   orderCards,
   parseCommand,
   shortModel,
+  statusGlyph,
   statusText,
   summarizePrompt,
+  toolLine,
   truncate,
 } from './lib'
 
@@ -52,6 +59,7 @@ const agents = atom({ plugin: 'agent-deck', key: 'agents' } as const, [] as Card
 const clockNow = atom({ plugin: 'agent-deck', key: 'now' } as const, 0)
 const autoOpened = atom({ plugin: 'agent-deck', key: 'autoOpened' } as const, false)
 const cwdAtom = atom({ plugin: 'agent-deck', key: 'cwd' } as const, '')
+const phoneWatching = atom({ plugin: 'agent-deck', key: 'phoneWatching' } as const, false)
 
 /** The ticking timer while any agent runs (runtime handle, see the header). */
 let ticker: Timer | undefined
@@ -109,7 +117,7 @@ type Config = { autoOpen: boolean; statusLine: boolean }
 /** Status line and ticker follow the cards after every change. */
 async function settle($: Engine, cfg: Config): Promise<void> {
   const list = await read($, agents)
-  if (cfg.statusLine) $.ui.status(statusText(list))
+  if (cfg.statusLine) $.ui.status(statusText(list, await read($, phoneWatching)))
   const isRunning = list.some(card => card.status === 'running')
   if (isRunning && ticker === undefined) {
     let ticks = 0
@@ -168,6 +176,23 @@ async function reconcile($: Engine, cfg: Config): Promise<void> {
     }
     return next
   })
+}
+
+async function surfacesOf($: Engine): Promise<readonly RenderSurface[]> {
+  try {
+    return await $.session.surfaces()
+  } catch {
+    return []
+  }
+}
+
+/** Re-reads whether a phone watches the session; the status line follows. */
+async function learnSurfaces($: Engine, cfg: Config): Promise<void> {
+  const isPhone = (await surfacesOf($)).includes('mobile')
+  if ((await read($, phoneWatching)) !== isPhone) {
+    await update($, phoneWatching, () => isPhone)
+    await settle($, cfg)
+  }
 }
 
 async function cwdOf($: Engine): Promise<string | undefined> {
@@ -326,6 +351,15 @@ async function runDeck($: Engine, cfg: Config, e: CommandRunInput): Promise<Comm
     await settle($, cfg)
     return { text: removed === 0 ? 'No finished agents to clear.' : `Cleared ${removed} finished agent${removed === 1 ? '' : 's'}.` }
   }
+  // The phone docks no pane: asked from it (or where only phones draw),
+  // the deck answers inline, as the command's output row.
+  const surfaces = await surfacesOf($)
+  const isPhoneOnly = surfaces.length > 0 && surfaces.every(surface => surface === 'mobile')
+  const isFromPhone = isPhoneOnly || (e.origin.kind === 'bridge' && surfaces.includes('mobile'))
+  if (isFromPhone && command !== 'close') {
+    await quietly(() => reconcile($, cfg))
+    return inline($)
+  }
   const isUp = await isPaneUp($)
   if (command === 'close' || (command === 'toggle' && isUp)) {
     if (isUp) await $.ui.close({ id: PANE })
@@ -333,7 +367,18 @@ async function runDeck($: Engine, cfg: Config, e: CommandRunInput): Promise<Comm
   }
   await quietly(() => reconcile($, cfg))
   const opened = await $.ui.open({ id: PANE, title: TITLE })
-  return { text: opened.isPlaced ? 'Agent deck opened.' : 'Agent deck is open; widen the terminal to see it.' }
+  if (opened.isPlaced) return { text: 'Agent deck opened.' }
+  // Open but unplaced (no attached surface places panes): it is seated when
+  // one that does attaches; until then the deck answers inline.
+  return inline($)
+}
+
+/** The deck as the command's output: text the model reads, cards the CommandOutput hook draws. */
+async function inline($: Engine): Promise<CommandRunResult> {
+  const at = await $.clock.now()
+  await update($, clockNow, previous => Math.max(previous, at))
+  const now = await read($, clockNow)
+  return { text: inlineDeckText(await read($, agents), now) }
 }
 
 export const register: Register = (on, options: PluginOptions) => {
@@ -365,8 +410,21 @@ export const register: Register = (on, options: PluginOptions) => {
       })
     })
     await quietly(() => cwdOf($))
+    await quietly(() => learnSurfaces($, cfg))
     await quietly(() => settle($, cfg))
     return next(e)
+  })
+
+  // A phone joining or leaving switches the status line's variant.
+  on('session.attach', async ($, e, next) => {
+    const joined = await next(e)
+    await quietly(() => learnSurfaces($, cfg))
+    return joined
+  })
+  on('session.detach', async ($, e, next) => {
+    const left = await next(e)
+    await quietly(() => learnSurfaces($, cfg))
+    return left
   })
 
   on('command.describe', { command: 'agents' }, async ($, e, next) => {
@@ -573,6 +631,85 @@ export const register: Register = (on, options: PluginOptions) => {
         {header}
         {cards}
         {hasFinished && <Text dimColor>/agents clear removes finished agents</Text>}
+      </Box>
+    )
+  })
+
+  // The inline deck: `/agents` answered as its output row (a phone, or no
+  // surface that places panes). It reads the cards from `$.state`, which
+  // subscribes the row, so it redraws live as agents change, ticking with
+  // the clock while any run; the stamp says when it last changed.
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+    const command = e.props.command
+    const isOurs = command === 'agents' || command === 'agent-deck'
+    if (!isOurs || e.props.isErrored || !e.props.text.startsWith(INLINE_HEAD)) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const list = orderCards(await read($, agents))
+    const now = await read($, clockNow)
+    const width = Math.max(20, Math.min(e.viewport?.columns ?? 40, 72))
+    const stamp = `as of ${formatClock(now)}`
+
+    const header = (
+      <Box flexDirection="column">
+        <Text bold wrap="truncate">
+          {truncate(`Agents · ${headerText(list)}`, width)}
+        </Text>
+        <Text dimColor wrap="truncate">
+          {stamp}
+        </Text>
+      </Box>
+    )
+    if (list.length === 0) {
+      return (
+        <Box flexDirection="column">
+          {header}
+          <Text dimColor wrap="wrap">
+            Cards appear here when Claude spawns a subagent.
+          </Text>
+        </Box>
+      )
+    }
+    const inner = width - 2
+    const cards = list.map(card => {
+      const isRunning = card.status === 'running'
+      const isFailed = card.status === 'failed'
+      const color = isRunning ? 'claude' : isFailed ? 'error' : 'success'
+      const elapsed = formatElapsed(elapsedOf(card, now))
+      const titleRoom = Math.max(4, width - elapsed.length - 3)
+      const tool = toolLine(card)
+      return (
+        <Box key={`inline:${card.key}`} flexDirection="column">
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text wrap="truncate">
+              <Text color={color}>{statusGlyph(card.status)}</Text> <Text bold={!isFailed} dimColor={!isRunning}>
+                {truncate(card.title, titleRoom)}
+              </Text>
+            </Text>
+            <Text dimColor={!isRunning}>{elapsed}</Text>
+          </Box>
+          <Text dimColor wrap="truncate">
+            {'  '}
+            {truncate(metaLine(card), inner)}
+          </Text>
+          {tool !== undefined && (
+            <Text dimColor wrap="truncate">
+              {'  '}
+              {truncate(tool, inner)}
+            </Text>
+          )}
+          {card.note !== undefined && (
+            <Text color={isFailed ? 'error' : undefined} dimColor={!isFailed} wrap="truncate">
+              {'  '}
+              {truncate(card.note, inner)}
+            </Text>
+          )}
+        </Box>
+      )
+    })
+    return (
+      <Box flexDirection="column" gap={1}>
+        {header}
+        {cards}
       </Box>
     )
   })

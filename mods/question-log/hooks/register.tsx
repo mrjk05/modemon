@@ -8,7 +8,13 @@ import {
   detectQuestion,
   findFlagged,
   formatAskAnswer,
+  INLINE_HEAD,
+  inlineMarkdown,
+  inlineSelection,
   normalize,
+  questionLine,
+  snippet,
+  summaryLine,
   relativeTime,
   statusText,
   textHash,
@@ -54,7 +60,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
-      description: 'Toggle the question log pane (questions asked and their answers)',
+      description: 'Toggle the question log pane (shown inline where no pane is drawn, as on mobile)',
       argumentHint: '[clear]',
       immediate: true,
     })
@@ -148,13 +154,81 @@ export const register: Register = (on, options) => {
     }
     if (arg !== '') return { text: `Usage: /${COMMAND} [clear]` }
 
-    const isUp = (await $.ui.panes()).some(pane => pane.id === PANE)
+    // Only a drawn pane toggles closed: one waiting undrawn (no surface here
+    // places panes, or the terminal is narrow) is answered inline again.
+    const isUp = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isPlaced)
     if (isUp) {
       await $.ui.close({ id: PANE })
       return { text: 'Question log closed.' }
     }
     const opened = await $.ui.open({ id: PANE, title: 'Questions' })
-    return { text: opened.isPlaced ? 'Question log opened.' : 'Question log opens when the terminal is wide enough.' }
+    if (opened.isPlaced) return { text: 'Question log opened.' }
+    // No pane drawn (the mobile app, an older desktop, a narrow terminal):
+    // the log is the command's answer, as markdown the CommandOutput hook
+    // below draws as a compact tree.
+    return { text: inlineMarkdown(await read($, log), await $.clock.now()) }
+  })
+
+  // `/questions` inline: where the pane could not be placed, and always on
+  // mobile, which draws no panes. Box and Text only, sized to the viewport.
+  on('ui.render', { component: 'CommandOutput', props: { command: COMMAND } }, async ($, e, next) => {
+    if (e.props.isErrored || e.props.args.trim() !== '') return next(e)
+    const isInline = e.props.text.startsWith(INLINE_HEAD)
+    if (!isInline && e.surface !== 'mobile') return next(e)
+
+    const { Box, Text } = $.ui.resolve(e)
+    const entries = await read($, log)
+    const now = await $.clock.now()
+    const columns = Math.max(24, e.viewport?.columns ?? 80)
+    const width = columns - 4
+
+    if (entries.length === 0) {
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>No questions yet.</Text>
+        </Box>
+      )
+    }
+
+    const { open, answered, hidden } = inlineSelection(entries)
+    return (
+      <Box flexDirection="column">
+        <Text bold>{summaryLine(entries)}</Text>
+        {open.map(entry => (
+          <Box key={entry.id} flexDirection="column">
+            <Text>
+              <Text bold color="yellow">
+                {'? '}
+              </Text>
+              <Text color="yellow">{questionLine(entry, width)}</Text>
+              <Text dimColor>
+                {'  '}
+                {relativeTime(entry.at, now)}
+              </Text>
+            </Text>
+          </Box>
+        ))}
+        {answered.map(entry => (
+          <Box key={entry.id} flexDirection="column">
+            <Text>
+              <Text color="green">{'✓ '}</Text>
+              <Text>{questionLine(entry, width)}</Text>
+              <Text dimColor>
+                {'  '}
+                {relativeTime(entry.at, now)}
+              </Text>
+            </Text>
+            <Box paddingLeft={2}>
+              <Text dimColor>
+                {'↳ '}
+                {snippet(entry.answer ?? '', width - 2)}
+              </Text>
+            </Box>
+          </Box>
+        ))}
+        {hidden > 0 && <Text dimColor>{hidden} older not shown · /questions clear empties the log</Text>}
+      </Box>
+    )
   })
 
   // Highlight: a reply flagged as a question is drawn in a coloured box.

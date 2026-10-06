@@ -1,4 +1,4 @@
-import type { On, ProcessRunResult } from 'claude-code'
+import type { HttpInit, On, ProcessRunResult } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 type Host = {
@@ -249,5 +249,215 @@ describe('/notify', () => {
     await clock.settle()
     await clock.settle()
     expect(notifications(calls)).toHaveLength(2)
+  })
+})
+
+// --- ntfy (phone push) --------------------------------------------------------
+
+const TOPIC = 'claude-x7Hq9vR2mK4pL8sT'
+const NTFY = { options: { ntfyTopic: TOPIC } }
+
+type Fetched = { url: string; init: HttpInit | undefined }
+
+/** Answers `$.http.fetch` beneath the plugin: 200, a status, or a thrown network error. */
+function fakeNet(on: On, answer: number | 'throw' = 200): Fetched[] {
+  const calls: Fetched[] = []
+  on('http.fetch', ($, e) => {
+    calls.push({ url: e.url, init: e.init })
+    if (answer === 'throw') return { deny: 'getaddrinfo ENOTFOUND ntfy.sh' }
+    return { value: { status: answer, ok: answer >= 200 && answer < 300, headers: {}, text: answer >= 300 ? 'nope' : '{}' } }
+  })
+  return calls
+}
+
+describe('ntfy', () => {
+  test('cloud session (Linux, no notifier) still pushes to the phone', NTFY, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, {})
+    const calls = fakeHost(on, { os: 'Linux', missing: ['notify-send'] })
+    const net = fakeNet(on)
+    // a repo name with a non-ASCII letter, as a cloud checkout may have
+    on('session.repo', () => ({ value: null }))
+    on('session.cwd', () => ({ value: '/home/user/café' }))
+
+    await $.classic.Notification({ message: 'Claude needs your permission to use "Bash"', notification_type: 'permission_prompt' })
+    await clock.settle()
+    await clock.settle()
+
+    expect(calls.filter(a => a[0] === 'notify-send')).toHaveLength(1) // tried, failed
+    expect(net).toHaveLength(1)
+    const req = net[0]
+    expect(req?.url).toBe(`https://ntfy.sh/${TOPIC}`)
+    expect(req?.init?.method).toBe('POST')
+    expect(req?.init?.headers?.['Priority']).toBe('high')
+    expect(req?.init?.headers?.['Tags']).toBe('question')
+    // "Claude Code · café" is not ASCII, so the title goes RFC 2047 encoded
+    expect(req?.init?.headers?.['Title']).toBe('=?UTF-8?B?Q2xhdWRlIENvZGUgwrcgY2Fmw6k=?=')
+    expect(req?.init?.body).toBe('Claude needs your permission to use "Bash"')
+
+    const status = await $.command.run(slash('status'))
+    expect(status.text).toContain('backend: not chosen yet')
+    expect(status.text).toContain('Last push:** delivered (HTTP 200)')
+  })
+
+  test('a long turn pushes with default priority and a check tag', { options: { ntfyTopic: TOPIC, ntfyServer: 'https://push.example.com/' } }, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, {})
+    fakeHost(on, { os: 'Linux' })
+    const net = fakeNet(on)
+
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await clock.advance(45_000)
+    await $.turn.complete(complete('t1', 45_000))
+    await clock.settle()
+    await clock.settle()
+
+    expect(net).toHaveLength(1)
+    expect(net[0]?.url).toBe(`https://push.example.com/${TOPIC}`)
+    expect(net[0]?.init?.headers).toMatchObject({ Priority: 'default', Tags: 'white_check_mark' })
+    expect(net[0]?.init?.body).toBe('Done in 45s: Refactored the parser.')
+  })
+
+  test('ntfy failing never stops the desktop notification, and vice versa', NTFY, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, {})
+    const calls = fakeHost(on, { os: 'Linux' })
+    const net = fakeNet(on, 'throw')
+
+    await expect($.classic.StopFailure({ error: 'overloaded' })).resolves.toEqual({})
+    await clock.settle()
+    await clock.settle()
+    expect(notifications(calls)).toHaveLength(1)
+    expect(net).toHaveLength(1)
+    expect(net[0]?.init?.headers).toMatchObject({ Priority: 'high', Tags: 'warning' })
+
+    const status = await $.command.run(slash('status'))
+    expect(status.text).toContain('Last push:** failed')
+    expect(status.text).toContain('getaddrinfo ENOTFOUND')
+  })
+
+  test('without a topic nothing is fetched', async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, {})
+    fakeHost(on, { os: 'Linux' })
+    const net = fakeNet(on)
+    await $.classic.Notification({ message: 'x', notification_type: 'permission_prompt' })
+    await clock.settle()
+    await clock.settle()
+    expect(net).toHaveLength(0)
+  })
+
+  test('focused terminal on macOS: no desktop note and no phone push', NTFY, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { TERM_PROGRAM: 'Apple_Terminal' })
+    const calls = fakeHost(on, { os: 'Darwin', front: 'com.apple.Terminal' })
+    const net = fakeNet(on)
+    await $.classic.Notification({ message: 'x', notification_type: 'permission_prompt' })
+    await clock.settle()
+    await clock.settle()
+    expect(notifications(calls)).toHaveLength(0)
+    expect(net).toHaveLength(0)
+  })
+
+  test('ntfyOnlyWhenAway off: the phone gets it even while the terminal is focused', { options: { ntfyTopic: TOPIC, ntfyOnlyWhenAway: false } }, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { TERM_PROGRAM: 'Apple_Terminal' })
+    const calls = fakeHost(on, { os: 'Darwin', front: 'com.apple.Terminal' })
+    const net = fakeNet(on)
+    await $.classic.Notification({ message: 'x', notification_type: 'permission_prompt' })
+    await clock.settle()
+    await clock.settle()
+    expect(notifications(calls)).toHaveLength(0)
+    expect(net).toHaveLength(1)
+  })
+
+  test('unfocused on macOS: desktop and phone both', NTFY, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { TERM_PROGRAM: 'Apple_Terminal' })
+    const calls = fakeHost(on, { os: 'Darwin', front: 'com.apple.finder' })
+    const net = fakeNet(on)
+    await $.classic.Notification({ message: 'x', notification_type: 'permission_prompt' })
+    await clock.settle()
+    await clock.settle()
+    expect(notifications(calls)).toHaveLength(1)
+    expect(net).toHaveLength(1)
+  })
+
+  test('/notify test sends to both and reports each', NTFY, async ($, on) => {
+    mock.clock(on)
+    mock.env(on, {})
+    const calls = fakeHost(on, { os: 'Linux' })
+    const net = fakeNet(on)
+    const r = await $.command.run(slash('test'))
+    expect(r.text).toContain('desktop sent via notify-send')
+    expect(r.text).toContain('phone push sent via ntfy (HTTP 200)')
+    expect(notifications(calls)).toHaveLength(1)
+    expect(net).toHaveLength(1)
+    expect(net[0]?.init?.headers?.['Tags']).toBe('bell')
+  })
+
+  test('/notify test reports a rejected push', NTFY, async ($, on) => {
+    mock.clock(on)
+    mock.env(on, {})
+    fakeHost(on, { os: 'Linux', missing: ['notify-send'] })
+    fakeNet(on, 403)
+    const r = await $.command.run(slash('test'))
+    expect(r.text).toContain('desktop could not send')
+    expect(r.text).toContain('phone push failed (HTTP 403: nope)')
+  })
+})
+
+describe('/notify status output', () => {
+  test('masks the topic and draws as a card on every surface, compact on mobile', NTFY, async ($, on) => {
+    mock.clock(on)
+    mock.env(on, {})
+    fakeHost(on, { os: 'Linux' })
+    fakeNet(on)
+
+    const text = (await $.command.run(slash('status'))).text ?? ''
+    expect(text).not.toContain(TOPIC)
+    expect(text).toContain('`https://ntfy.sh/cl••••sT`')
+
+    for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+      const ui = await $.ui.mount({
+        plugin: 'notify',
+        surface,
+        component: 'CommandOutput',
+        props: { command: 'notify', args: 'status', text, isErrored: false },
+        viewport: { columns: surface === 'mobile' ? 40 : 100, rows: 40, isFullscreen: false },
+      })
+      const head = await ui.find({ type: 'Text', text: /notify · on/ })
+      expect(head?.text).toBe('🔔 notify · on')
+      const md = await ui.find({ type: 'Markdown' })
+      expect(md?.text).toContain('cl••••sT')
+      expect(md?.text).not.toContain(TOPIC)
+      const root = await ui.drawn()
+      expect(root.type).toBe('Box')
+      const rootProps: Record<string, unknown> = ('props' in root ? root.props : undefined) ?? {}
+      expect(rootProps['borderStyle']).toBe(surface === 'mobile' ? undefined : 'round')
+      await ui.unmount()
+    }
+  })
+
+  test('other /notify rows are left to the engine', async ($, on) => {
+    mock.clock(on)
+    mock.env(on, {})
+    let reached = 0
+    on('ui.render', () => {
+      reached += 1
+      return { type: 'engine', ref: 0 } as const
+    })
+    for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+      const ui = await $.ui.mount({
+        plugin: 'notify',
+        surface,
+        component: 'CommandOutput',
+        props: { command: 'notify', args: 'on', text: 'notify: on.', isErrored: false },
+      })
+      expect(await ui.find({ type: 'Markdown', text: /cl••••/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /🔔/ })).toBeUndefined()
+      await ui.unmount()
+    }
+    expect(reached).toBe(3)
   })
 })

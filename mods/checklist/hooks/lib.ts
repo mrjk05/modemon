@@ -281,3 +281,20 @@ export function parseToolInput(input: Readonly<Record<string, unknown>>): ToolRe
     }
   }
 }
+
+export const STATUS_NEXT_MAX = 40
+
+/** The status line, `☑ 3/7 · next: Write tests`; undefined (clears it) when the list is empty. */
+export function statusText(items: readonly ChecklistItem[], maxNext = STATUS_NEXT_MAX): string | undefined {
+  if (items.length === 0) return undefined
+  const p = progress(items)
+  if (p.next === undefined) return `☑ ${p.done}/${p.total} · all done`
+  const text = p.next.text.length > maxNext ? `${p.next.text.slice(0, maxNext - 1)}…` : p.next.text
+  return `☑ ${p.done}/${p.total} · next: ${text}`
+}
+
+/** Cuts `text` to `max` characters with an ellipsis. */
+export function clip(text: string, max: number): string {
+  if (max < 2) return text.slice(0, Math.max(max, 0))
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}

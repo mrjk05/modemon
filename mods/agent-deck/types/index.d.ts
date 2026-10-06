@@ -45,6 +45,8 @@ declare module 'claude-code' {
       autoOpened: boolean;
       /** The session's directory, which tool paths are shown relative to. */
       cwd: string;
+      /** True while the Claude mobile app is among the session's surfaces. */
+      phoneWatching: boolean;
     };
   }
 }

@@ -1,17 +1,23 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, RenderNode } from 'claude-code'
 
 import {
   WARNING,
   barCells,
+  cardText,
+  formatTokens,
   headlineRuns,
   labelCells,
   legendItems,
   packLegend,
+  parseCommand,
+  richStatusText,
+  shareOf,
   shouldWarn,
   statusText,
   toRuns,
   toSnapshot,
+  topCategories,
 } from './lib'
 import type { Run } from './lib'
 
@@ -29,16 +35,37 @@ function style(run: Run): { color?: string; bold?: boolean; dimColor?: boolean }
   }
 }
 
+/**
+ * Whether a tree from beneath draws nothing: absent, empty strings and empty
+ * Boxes or Texts, or the engine's own band while no survey holds it (the
+ * band draws only when none does).
+ */
+function drawsNothing(node: RenderNode | undefined): boolean {
+  if (node === undefined) return true
+  if (typeof node === 'string') return node === ''
+  if (node.type === 'engine') return true
+  if (node.type === 'Box' || node.type === 'Text') return (node.children ?? []).every(drawsNothing)
+
+  return false
+}
+
 type Settings = { warnAtHalf: boolean; statusMode: string }
 
-/** Pins `ctx 71%` when the band cannot be seen: hidden, or on a surface without it. */
+/** Surfaces that never raise the band: mobile, VS Code. */
+function isBandless(surface: string): boolean {
+  return surface !== 'terminal' && surface !== 'desktop'
+}
+
+/**
+ * Pins the status entry when the band cannot be seen: hidden, or a surface
+ * without it attached (mobile), where it reads `🟡 ctx 71% · passive`.
+ */
 async function syncStatus($: EngineInterface, settings: Settings): Promise<void> {
-  let show = settings.statusMode === 'always'
-  if (settings.statusMode === 'auto') {
-    const surfaces = await $.session.surfaces()
-    show = (await read($, isHidden)) || surfaces.some(s => s !== 'terminal' && s !== 'desktop')
-  }
-  $.ui.status(show ? statusText(await read($, snapshot)) : undefined)
+  if (settings.statusMode === 'off') return $.ui.status(undefined)
+  const bandless = (await $.session.surfaces()).some(isBandless)
+  const show = settings.statusMode === 'always' || bandless || (await read($, isHidden))
+  const s = await read($, snapshot)
+  $.ui.status(show ? (bandless ? richStatusText(s) : statusText(s)) : undefined)
 }
 
 /** Re-measures the window (the free, local `summary` breakdown) and warns once past 50%. */
@@ -77,8 +104,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
-      description: 'Toggle the context window bar above the prompt',
-      argumentHint: '[on|off]',
+      description: 'Show a context window card; on|off shows or hides the bar above the prompt',
+      argumentHint: '[show|on|off|toggle]',
     })
     await refresh($, settings)
 
@@ -109,6 +136,21 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A phone (or another bandless surface) joining or leaving moves the status entry.
+  on('session.attach', async ($, e, next) => {
+    const result = await next(e)
+    await syncStatus($, settings).catch(() => undefined)
+
+    return result
+  })
+
+  on('session.detach', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'detach') await syncStatus($, settings).catch(() => undefined)
+
+    return result
+  })
+
   // A /clear raises no session.start; the settings hook event carries it instead.
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
@@ -121,30 +163,89 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: COMMAND }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
-    const hidden = await update($, isHidden, was => (arg === 'on' ? false : arg === 'off' ? true : !was))
+    const action = parseCommand(e.args)
+    if (action === 'show') {
+      await refresh($, settings)
+
+      return { text: cardText(await read($, snapshot)) }
+    }
+    if (action === 'unknown') return { text: 'Usage: /context-bar [show|on|off|toggle]' }
+
+    const hidden = await update($, isHidden, was => (action === 'on' ? false : action === 'off' ? true : !was))
     await syncStatus($, settings)
 
     return { text: hidden ? 'Context bar hidden.' : 'Context bar shown.' }
   })
 
+  // `/context-bar` (or `show`) draws a compact card in its output row, on every surface.
+  on('ui.render', { component: 'CommandOutput', props: { command: COMMAND } }, async ($, e, next) => {
+    const s = await read($, snapshot)
+    if (e.props.isErrored || parseCommand(e.props.args) !== 'show' || s === null) return next(e)
+
+    const { Box, Text } = $.ui.resolve(e)
+    const width = Math.min(100, Math.max(16, (e.viewport?.columns ?? 60) - 2))
+    const row = (runs: Run[]) => (
+      <Box flexDirection="row">
+        {runs.map(run => (
+          <Text wrap="truncate-end" {...style(run)}>
+            {run.text}
+          </Text>
+        ))}
+      </Box>
+    )
+
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" flexWrap="wrap">
+          <Text color="claude" bold>
+            ◆ context{'  '}
+          </Text>
+          {headlineRuns(s).map(run => (
+            <Text {...style(run)}>{run.text}</Text>
+          ))}
+        </Box>
+        {row(toRuns(barCells(s, width)))}
+        {width >= 24 && row(toRuns(labelCells(s, width)))}
+        {topCategories(s, 4).map(seg => (
+          <Text wrap="truncate-end">
+            <Text color={seg.color}>■</Text>
+            <Text> {seg.name} </Text>
+            <Text bold>{formatTokens(seg.tokens)}</Text>
+            <Text dimColor> · {shareOf(s, seg.tokens)}%</Text>
+          </Text>
+        ))}
+        {s.segments.length > 0 && <Text dimColor>Category split is estimated.</Text>}
+      </Box>
+    )
+  })
+
+  // The band is one instance for every plugin: draw ours, then stack what is beneath under it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const hidden = await read($, isHidden)
     const s = await read($, snapshot)
-    if (e.props.hasSurvey || hidden || s === null) return next(e)
+    const below = await next(e)
+    if (e.props.hasSurvey || hidden || s === null) return below
 
     const { Box, Text } = $.ui.resolve(e)
     const width = Math.max(1, e.props.bodyColumns)
     const head = headlineRuns(s).map(run => <Text {...style(run)}>{run.text}</Text>)
 
+    const stack = (mine: RenderElement): RenderElement =>
+      drawsNothing(below) ? mine : (
+        <Box flexDirection="column">
+          {mine}
+          {below}
+        </Box>
+      )
+
     if (width < 24) {
-      return (
+      return stack(
         <Box flexDirection="row">
           <Text color="claude" bold>
             ctx{' '}
           </Text>
           {head}
-        </Box>
+        </Box>,
       )
     }
 
@@ -160,7 +261,7 @@ export const register: Register = (on, options) => {
     const legendRoom = Math.max(0, e.props.maxRows - 3)
     const legend = showLegend ? packLegend(legendItems(s), width).slice(0, legendRoom) : []
 
-    return (
+    return stack(
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
           <Box flexDirection="row">
@@ -183,7 +284,7 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         ))}
-      </Box>
+      </Box>,
     )
   })
 }

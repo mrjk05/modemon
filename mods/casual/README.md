@@ -54,7 +54,16 @@ Answer `y` to add the marketplace, then pick a scope. Casual mode is on as soon 
 | `/casual chill` | The default friendly 1 to 4 sentences (turns it on) |
 | `/casual status` (or `/casual`) | Show the current mode |
 
-Your choice is kept in the plugin's store, so it carries over to new sessions.
+Your choice is kept in the plugin's store, so it carries over to new sessions. The answer is drawn as a small card:
+
+```
+╭─────────────────────────────╮
+│ ☺ casual on                 │
+│ style brief · 1-2 sentences │
+│ tools folded                │
+│ /casual off · brief · chill │
+╰─────────────────────────────╯
+```
 
 ## Config
 
@@ -72,7 +81,26 @@ In `/config` (or `pluginConfigs.casual.options` in settings):
   - `ToolGroup`: a folded run of reads and searches becomes `· ran N tools (Read ×2, Grep, …)`. Failed calls are added in red. Expanding the group (ctrl+o in the non-fullscreen transcript, or `--verbose`) shows the engine's own rows.
   - `ToolUse`: a finished call becomes `· Bash npm test · 12 lines`, or a red `✗ Bash npm test` if it failed. Running calls are left alone.
   - `ToolResult`: hidden on success, since the row above already says how it went. On error it's one red line with the first line of the error.
+  - `CommandOutput` for `/casual`: the answer as a compact card (state, style, tool folding, a hint). It's drawn from the row's own text, so an old row keeps showing what it said then. The usage line for an unknown option is left as plain text.
   - Never folded: `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `TodoWrite`, `SendUserMessage` and `SendUserFile`. Anything still running is left alone too. The permission dialog is drawn by the engine only, so this mod can't touch it.
+
+## Surfaces
+
+Works the same on the **terminal**, **desktop** (Code tab) and the **Claude mobile app** (watching a cloud or Remote Control session). The style is part of the system prompt, so it applies wherever the session runs.
+
+| | Terminal | Desktop | Mobile |
+| --- | --- | --- | --- |
+| Reply style (`prompt.compose`) | yes | yes | yes |
+| Folded `ToolUse` / `ToolResult` / `ToolGroup` rows | yes | yes | yes |
+| `/casual` card (`CommandOutput`) | yes | yes | yes |
+| `☺ casual` status entry | yes | yes | yes |
+
+Every drawing uses only `Box` and `Text`, which every surface draws. Rows are sized to the surface's `viewport.columns` (100 when a surface hasn't measured), so they read well on a phone at about 40 columns:
+
+- A tool row keeps the tool name and outcome and cuts the target: a path keeps its end (`· Read …/hooks/register.tsx · 146 lines`), a command its start.
+- A group's tally drops tools from the end (`· ran 8 tools (Read ×2, Grep, Edit, …)`). When the failures don't fit beside it, they move to a red line of their own underneath.
+- An error under a tool row is cut to one line of the width.
+- The `/casual` card is at most four short lines.
 
 ## Limitations
 
@@ -81,4 +109,5 @@ In `/config` (or `pluginConfigs.casual.options` in settings):
 - **Style is guidance, not a guarantee.** The model may still write a longer answer when the content calls for it, and the prompt allows that on purpose.
 - **Subagents.** The `prompt.compose` input doesn't say whether a prompt is for a subagent, so the section may reach subagents too. Its text tells the model that reports for another agent follow their own conventions.
 - **Custom output styles.** The section is appended alongside any output style you've chosen. If they conflict, use `/casual off`.
+- **Mobile.** The phone has no ctrl+o transcript, so there's no way to expand a folded row there; use `/casual off` (or `collapseTools: false`) to see full tool output on the phone. Whether the card's rounded border is drawn is up to the app; the card reads fine without it. Width fitting counts characters, so very wide glyphs (CJK, emoji) in a path or command can still make a row wrap or truncate on the surface's side.
 - Built against Claude Code 2.1.290. The mods API is early access and may change.

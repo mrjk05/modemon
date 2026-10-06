@@ -23,7 +23,15 @@ export type Config = {
   onSubagentDone: boolean
   sound: string
   onlyWhenUnfocused: boolean
+  /** ntfy topic to push to; '' is off. */
+  ntfyTopic: string
+  /** ntfy server base URL. */
+  ntfyServer: string
+  /** Skip the phone push while you are evidently at the computer (terminal frontmost). */
+  ntfyOnlyWhenAway: boolean
 }
+
+export const DEFAULT_NTFY_SERVER = 'https://ntfy.sh'
 
 export const DEFAULTS: Config = {
   onNeedsInput: true,
@@ -33,6 +41,9 @@ export const DEFAULTS: Config = {
   onSubagentDone: true,
   sound: 'Glass',
   onlyWhenUnfocused: true,
+  ntfyTopic: '',
+  ntfyServer: DEFAULT_NTFY_SERVER,
+  ntfyOnlyWhenAway: true,
 }
 
 type Options = Readonly<Record<string, string | number | boolean | readonly string[]>>
@@ -43,6 +54,8 @@ export function readConfig(options: Options | undefined): Config {
   const o = options ?? {}
   const min = o['minTurnSeconds']
   const sound = o['sound']
+  const topic = o['ntfyTopic']
+  const server = o['ntfyServer']
   return {
     onNeedsInput: bool(o['onNeedsInput'], DEFAULTS.onNeedsInput),
     onTurnDone: bool(o['onTurnDone'], DEFAULTS.onTurnDone),
@@ -52,6 +65,10 @@ export function readConfig(options: Options | undefined): Config {
     onSubagentDone: bool(o['onSubagentDone'], DEFAULTS.onSubagentDone),
     sound: typeof sound === 'string' ? sound.trim() : DEFAULTS.sound,
     onlyWhenUnfocused: bool(o['onlyWhenUnfocused'], DEFAULTS.onlyWhenUnfocused),
+    ntfyTopic: typeof topic === 'string' ? topic.trim() : DEFAULTS.ntfyTopic,
+    ntfyServer:
+      typeof server === 'string' && server.trim() !== '' ? server.trim() : DEFAULTS.ntfyServer,
+    ntfyOnlyWhenAway: bool(o['ntfyOnlyWhenAway'], DEFAULTS.ntfyOnlyWhenAway),
   }
 }
 
@@ -291,3 +308,195 @@ export function parseCommand(args: string): NotifyCommand {
 }
 
 export const HELP = 'Usage: /notify [test | on | off | status]'
+
+// --- ntfy (phone push) ------------------------------------------------------
+
+/** ntfy's own topic rule: 1 to 64 of letters, digits, `-` and `_`. */
+const TOPIC = /^[-_A-Za-z0-9]{1,64}$/
+/** An http(s) origin with an optional path (a self-hosted server under a prefix). */
+const SERVER = /^https?:\/\/[^\s/?#@]+(\/[^\s?#]*)?$/i
+
+/** Topics shorter than this are flagged as guessable in `/notify status`. */
+export const SHORT_TOPIC = 20
+
+export type NtfyTarget = { url: string; server: string; topic: string } | { error: string }
+
+/** The URL a notification is POSTed to, or why the config cannot make one. */
+export function ntfyTarget(server: string, topic: string): NtfyTarget {
+  const t = topic.trim()
+  if (t === '') return { error: 'off (no ntfyTopic set)' }
+  if (!TOPIC.test(t)) return { error: 'ntfyTopic must be 1-64 letters, digits, - or _' }
+  const s = (server.trim() || DEFAULT_NTFY_SERVER).replace(/\/+$/, '')
+  if (!SERVER.test(s)) return { error: `ntfyServer is not an http(s) URL: ${clean(s, 80)}` }
+  return { url: `${s}/${t}`, server: s, topic: t }
+}
+
+/** `abcdefghij…` → `ab••••ij`: enough to recognise, not enough to subscribe. */
+export function maskTopic(topic: string): string {
+  const t = topic.trim()
+  if (t.length < 8) return '•'.repeat(Math.max(4, t.length))
+  return `${t.slice(0, 2)}••••${t.slice(-2)}`
+}
+
+export type NtfyPriority = 'high' | 'default'
+
+export function ntfyPriority(kind: Kind): NtfyPriority {
+  return kind === 'input' || kind === 'error' ? 'high' : 'default'
+}
+
+/** ntfy emoji short codes (drawn as emoji in the app) per kind. */
+export const NTFY_TAGS: Readonly<Record<Kind, readonly string[]>> = {
+  input: ['question'],
+  done: ['white_check_mark'],
+  error: ['warning'],
+  subagent: ['robot'],
+  test: ['bell'],
+}
+
+function utf8(text: string): number[] {
+  const out: number[] = []
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0xfffd
+    if (cp < 0x80) out.push(cp)
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 63))
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63))
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63))
+  }
+  return out
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+export function base64(bytes: readonly number[]): string {
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i] ?? 0
+    const b = bytes[i + 1]
+    const c = bytes[i + 2]
+    const n = (a << 16) | ((b ?? 0) << 8) | (c ?? 0)
+    out += B64[(n >> 18) & 63]
+    out += B64[(n >> 12) & 63]
+    out += b === undefined ? '=' : B64[(n >> 6) & 63]
+    out += c === undefined ? '=' : B64[n & 63]
+  }
+  return out
+}
+
+/** Longest UTF-8 run per encoded word: 45 bytes is 60 base64 chars, 72 with the wrapper (RFC 2047 caps a word at 75). */
+const WORD_BYTES = 45
+
+/**
+ * A header value safe to send: printable ASCII as is, anything else as RFC 2047
+ * `=?UTF-8?B?…?=` encoded words (split on character boundaries, space
+ * separated), which ntfy decodes. Control characters are flattened first, so
+ * no value can smuggle a CR/LF into the request.
+ */
+export function headerValue(text: string, max = 80): string {
+  const v = clean(text, max)
+  if (/^[\x20-\x7e]*$/.test(v) && !v.includes('=?')) return v
+  const words: string[] = []
+  let run: number[] = []
+  for (const ch of v) {
+    const bytes = utf8(ch)
+    if (run.length + bytes.length > WORD_BYTES) {
+      words.push(`=?UTF-8?B?${base64(run)}?=`)
+      run = []
+    }
+    run.push(...bytes)
+  }
+  if (run.length > 0) words.push(`=?UTF-8?B?${base64(run)}?=`)
+  return words.join(' ')
+}
+
+export type NtfyRequest = {
+  url: string
+  init: { method: 'POST'; headers: Record<string, string>; body: string }
+}
+
+/** The POST that publishes `note` to the ntfy topic at `url`. */
+export function ntfyRequest(url: string, kind: Kind, note: Pick<Note, 'title' | 'body'>): NtfyRequest {
+  return {
+    url,
+    init: {
+      method: 'POST',
+      headers: {
+        Title: headerValue(note.title, 80),
+        Priority: ntfyPriority(kind),
+        Tags: NTFY_TAGS[kind].join(','),
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+      body: clean(note.body, 1000) || ' ',
+    },
+  }
+}
+
+/**
+ * Whether the phone push goes out, given what the desktop side did.
+ * With `onlyWhenAway`, it is skipped only while the terminal is the frontmost
+ * app (proof that you are at the computer, readable on macOS alone) and the
+ * desktop side did not fail. Anywhere focus cannot be read (Linux, a cloud
+ * container, an unknown terminal) or no desktop notifier exists, it always goes.
+ */
+export function shouldPush(
+  onlyWhenAway: boolean,
+  isFocused: boolean,
+  desktop: 'sent' | 'skipped' | 'failed',
+): boolean {
+  if (!onlyWhenAway) return true
+  return !(isFocused && desktop !== 'failed')
+}
+
+export type StatusInfo = {
+  isMuted: boolean
+  platform: Platform
+  backend: Backend | undefined
+  lastError: string | undefined
+  /** Where focus is read from, or why it is not (only shown with onlyWhenUnfocused). */
+  focus: string
+  lastNtfy: string | undefined
+  config: Config
+}
+
+const yesNo = (b: boolean): string => (b ? 'on' : 'off')
+
+/**
+ * `/notify status` as Markdown: a headline, then one short bullet per fact,
+ * which reads the same in a terminal row, the desktop and the phone.
+ */
+export function statusMarkdown(s: StatusInfo): string {
+  const c = s.config
+  const tries = backendsFor(s.platform)
+  const ntfy = ntfyTarget(c.ntfyServer, c.ntfyTopic)
+  const lines = [
+    `**notify** · ${s.isMuted ? 'muted for this session' : 'on'}`,
+    '',
+    `- **Desktop:** ${s.platform}, backend: ${
+      s.backend ?? (tries.length > 0 ? `not chosen yet (tries ${tries.join(', ')})` : 'none on this host')
+    }`,
+  ]
+  if (s.lastError !== undefined) lines.push(`- **Last desktop failure:** ${clean(s.lastError, 200)}`)
+  if ('error' in ntfy) {
+    lines.push(`- **Phone (ntfy):** ${ntfy.error}`)
+  } else {
+    const short = ntfy.topic.length < SHORT_TOPIC ? ' (short topic: easy to guess, use a longer random one)' : ''
+    lines.push(
+      `- **Phone (ntfy):** \`${ntfy.server}/${maskTopic(ntfy.topic)}\`${short}`,
+      `- **Phone only when away:** ${yesNo(c.ntfyOnlyWhenAway)}`,
+    )
+    if (s.lastNtfy !== undefined) lines.push(`- **Last push:** ${clean(s.lastNtfy, 200)}`)
+  }
+  lines.push(
+    `- **Triggers:** needs input ${yesNo(c.onNeedsInput)} · turn done (> ${c.minTurnSeconds}s) ${yesNo(
+      c.onTurnDone,
+    )} · errors ${yesNo(c.onError)} · subagents ${yesNo(c.onSubagentDone)}`,
+    `- **Sound:** ${c.sound || '(none)'} · **only when unfocused:** ${yesNo(c.onlyWhenUnfocused)}${
+      c.onlyWhenUnfocused ? ` (${s.focus})` : ''
+    }`,
+  )
+  return lines.join('\n')
+}
+
+/** True for the text `statusMarkdown` builds (its headline). */
+export function isStatusText(text: string): boolean {
+  return text.startsWith('**notify** · ')
+}

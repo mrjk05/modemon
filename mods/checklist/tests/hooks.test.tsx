@@ -3,7 +3,10 @@ import type { On } from 'claude-code'
 
 const TOOL = 'mcp__checklist__checklist'
 const ROOT = '/work/repo'
+/** Surfaces that raise AbovePrompt (the band). */
 const SURFACES = ['terminal', 'desktop'] as const
+/** Surfaces that raise Pane and CommandOutput. */
+const ALL_SURFACES = ['terminal', 'desktop', 'mobile'] as const
 
 const BAND = {
   component: 'AbovePrompt',
@@ -20,7 +23,7 @@ const PANE_PROPS = {
 } as const
 
 /** The world beneath the plugin: a store in memory (returned, to inspect), a clock, and a repo. */
-function world(on: On, entries: Record<string, unknown> = {}): Map<string, unknown> {
+function world(on: On, entries: Record<string, unknown> = {}, statuses: (string | undefined)[] = []): Map<string, unknown> {
   const store = new Map<string, unknown>(Object.entries(entries))
   on('store.get', (_$, e) => ({ value: store.get(e.key) }))
   on('store.set', (_$, e) => {
@@ -34,7 +37,22 @@ function world(on: On, entries: Record<string, unknown> = {}): Map<string, unkno
   on('tool.register', (_$, e) => ({ value: { tool: `mcp__checklist__${e.name}` } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.log', () => ({ value: undefined }))
+  on('ui.status', (_$, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
   return store
+}
+
+/** Every string drawn anywhere in a tree, in order. */
+function textsOf(tree: unknown): string[] {
+  if (typeof tree === 'string') return tree === '' ? [] : [tree]
+  if (typeof tree === 'number') return [String(tree)]
+  if (Array.isArray(tree)) return tree.flatMap(textsOf)
+  if (tree === null || typeof tree !== 'object') return []
+  const el = tree as { children?: unknown; props?: { children?: unknown; label?: unknown } }
+  const label = el.props?.label
+  return [...(typeof label === 'string' ? [label] : []), ...textsOf(el.children ?? el.props?.children)]
 }
 
 const COMMAND = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -160,8 +178,7 @@ test('the band shows progress and the next item on terminal and desktop', async 
   for (const surface of SURFACES) {
     const band = await $.ui.mount({ plugin: 'checklist', surface, ...BAND })
     const texts = (await band.findAll({ type: 'Text' })).map(found => found.text)
-    expect(texts).toEqual(['☑ 6/8 ▕████████░░▏ ', 'next: Write tests'])
-    expect(await band.find({ type: 'Text', text: 'engine band' })).toBeUndefined()
+    expect(texts.slice(0, 2)).toEqual(['☑ 6/8 ▕████████░░▏ ', 'next: Write tests'])
     await band.unmount()
   }
 })
@@ -171,7 +188,7 @@ test('the pane lists items and its buttons tick and remove them', async ($, on) 
   await startSession($)
   await $.tool.call({ tool: TOOL, action: 'add', items: ['First', 'Second'] })
 
-  for (const surface of SURFACES) {
+  for (const surface of ALL_SURFACES) {
     const pane = await $.ui.mount({ plugin: 'checklist', surface, component: 'Pane', requestId: 'checklist', props: PANE_PROPS })
     expect((await pane.find({ type: 'Text', text: /☑ \d\/\d/ }))?.text).toContain('0/2')
     await pane.press({ key: 'tick-1' })
@@ -207,4 +224,115 @@ test('the system prompt gets a checklist section only while items are open', asy
   expect(section?.text).toContain(TOOL)
   await $.tool.call({ tool: TOOL, action: 'done', ids: [1] })
   expect((await compose()).sections.map(s => s.id)).toEqual(['intro'])
+})
+
+test('the band shares the row: what the hooks beneath draw is stacked under it', async ($, on) => {
+  world(on)
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box key="other-band">
+        <Text>ctx 42%</Text>
+      </Box>
+    )
+  })
+  await startSession($)
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['Write tests'] })
+
+  for (const surface of SURFACES) {
+    const band = await $.ui.mount({ plugin: 'checklist', surface, ...BAND })
+    const texts = textsOf(await band.drawn())
+    const mine = texts.findIndex(text => text.startsWith('☑ 0/1'))
+    const theirs = texts.indexOf('ctx 42%')
+    expect(mine).toBeGreaterThanOrEqual(0)
+    expect(theirs).toBeGreaterThan(mine)
+    await band.unmount()
+  }
+})
+
+test('the band draws alone when nothing beneath draws', async ($, on) => {
+  world(on)
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+  await startSession($)
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['Write tests'] })
+  for (const surface of SURFACES) {
+    const band = await $.ui.mount({ plugin: 'checklist', surface, ...BAND })
+    expect(await band.drawn()).toMatchObject({ type: 'Box', props: { key: 'checklist-band' } })
+    await band.unmount()
+  }
+})
+
+test('the status line shows progress and the next item, and clears when the list empties', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  world(on, {}, statuses)
+  await startSession($)
+  expect(statuses.at(-1)).toBeUndefined()
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['Write tests', 'Ship it', 'Party'] })
+  expect(statuses.at(-1)).toBe('☑ 0/3 · next: Write tests')
+  await $.tool.call({ tool: TOOL, action: 'done', ids: [1] })
+  expect(statuses.at(-1)).toBe('☑ 1/3 · next: Ship it')
+  await $.tool.call({ tool: TOOL, action: 'done', ids: [2, 3] })
+  expect(statuses.at(-1)).toBe('☑ 3/3 · all done')
+  await $.tool.call({ tool: TOOL, action: 'clear-done' })
+  expect(statuses.at(-1)).toBeUndefined()
+})
+
+const commandRow = (args: string, text: string) =>
+  ({
+    component: 'CommandOutput',
+    props: { command: 'checklist', args, text, isErrored: false },
+    viewport: { columns: 40, rows: 30 },
+  }) as const
+
+test('/checklist draws the list inline with tappable ticks on mobile', async ($, on) => {
+  const store = world(on)
+  await startSession($)
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['First', 'Second'] })
+
+  const row = await $.ui.mount({ plugin: 'checklist', surface: 'mobile', ...commandRow('', 'Checklist pane closed.') })
+  expect((await row.find({ type: 'Text', text: /☑ \d\/\d/ }))?.text).toContain('0/2')
+  await row.press({ key: 'tick-2' })
+  expect((await row.find({ key: 'tick-2' }))?.props.label).toBe('☑')
+  expect((await row.find({ type: 'Text', text: /☑ \d\/\d/ }))?.text).toContain('1/2')
+  const stored = store.get(`list:${ROOT}`) as { id: number; status: string }[]
+  expect(stored.find(item => item.id === 2)?.status).toBe('done')
+  await row.unmount()
+})
+
+test('/checklist output: inline list when the pane is not placed or for list, the plain row otherwise', async ($, on) => {
+  world(on)
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: false as const, reason: 'no surface places panes' } }))
+  on('ui.render', { component: 'CommandOutput' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text key="engine-row">{e.props.text}</Text>
+  })
+  await startSession($)
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['First'] })
+
+  const answer = await $.command.run({ command: 'checklist', args: '', ...COMMAND })
+  expect(answer.text).toContain('[ ] #1 First')
+
+  for (const surface of ALL_SURFACES) {
+    const waiting = await $.ui.mount({ plugin: 'checklist', surface, ...commandRow('', String(answer.text)) })
+    expect(await waiting.find({ key: 'tick-1' })).toBeDefined()
+    await waiting.unmount()
+
+    const listed = await $.ui.mount({ plugin: 'checklist', surface, ...commandRow('list', 'whatever') })
+    expect(await listed.find({ key: 'tick-1' })).toBeDefined()
+    await listed.unmount()
+
+    const added = await $.ui.mount({ plugin: 'checklist', surface, ...commandRow('add x', 'Added: #2 x') })
+    expect(await added.find({ key: 'tick-1' })).toBeUndefined()
+    await added.unmount()
+  }
+
+  for (const surface of SURFACES) {
+    const opened = await $.ui.mount({ plugin: 'checklist', surface, ...commandRow('', 'Checklist pane opened.') })
+    expect(await opened.find({ key: 'tick-1' })).toBeUndefined()
+    await opened.unmount()
+  }
 })

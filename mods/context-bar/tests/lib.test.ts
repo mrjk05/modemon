@@ -3,6 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   apportion,
   barCells,
+  cardText,
   compactIndex,
   formatTokens,
   halfIndex,
@@ -10,10 +11,13 @@ import {
   labelCells,
   legendItems,
   packLegend,
+  parseCommand,
+  richStatusText,
   shouldWarn,
   statusText,
   toRuns,
   toSnapshot,
+  topCategories,
   zoneOf,
 } from '../hooks/lib'
 import { usageAt } from './fixtures'
@@ -130,4 +134,31 @@ test('legend packs into lines no wider than the band', () => {
       expect(size <= width || line.length === 1).toBe(true)
     }
   }
+})
+
+describe('mobile fallbacks', () => {
+  test('the status entry carries a zone dot and the zone', () => {
+    expect(richStatusText(toSnapshot(usageAt(30_000).context))).toBe('🟢 ctx 15% · active')
+    expect(richStatusText(toSnapshot(usageAt(142_000).context))).toBe('🟡 ctx 71% · passive')
+    expect(richStatusText(toSnapshot(usageAt(170_000).context))).toBe('🔴 ctx 85% · passive')
+    expect(richStatusText(null)).toBe('⚪ ctx --')
+  })
+
+  test('commands: bare or show is the card, on/off/toggle the band', () => {
+    expect(parseCommand('')).toBe('show')
+    expect(parseCommand(' Show ')).toBe('show')
+    expect(parseCommand('on')).toBe('on')
+    expect(parseCommand('OFF')).toBe('off')
+    expect(parseCommand('toggle')).toBe('toggle')
+    expect(parseCommand('what')).toBe('unknown')
+  })
+
+  test('the card lists the largest categories first', () => {
+    const s = toSnapshot(usageAt(142_000).context)
+    expect(topCategories(s, 2).map(seg => seg.name)).toEqual(['Messages', 'System tools'])
+    expect(cardText(s)).toBe(
+      'Context: 142k / 200k · 71% · passive. Largest (estimated): Messages 125k, System tools 12k, System prompt 3k, Memory files 2k.',
+    )
+    expect(cardText(null)).toBe('Context: not measured yet.')
+  })
 })

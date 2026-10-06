@@ -133,11 +133,78 @@ export function countByStatus(cards: readonly AgentDeckCard[]): Record<AgentDeck
   return counts
 }
 
-/** The status line while agents run (`⚙ 2 agents running`), else undefined. */
-export function statusText(cards: readonly AgentDeckCard[]): string | undefined {
+/** The running card that started last, if any. */
+export function newestRunning(cards: readonly AgentDeckCard[]): AgentDeckCard | undefined {
+  let newest: AgentDeckCard | undefined
+  for (const card of cards) {
+    if (card.status !== 'running') continue
+    if (newest === undefined || card.startedAt >= newest.startedAt) newest = card
+  }
+  return newest
+}
+
+/** How long the newest agent's title may run in the phone's status line. */
+export const STATUS_TITLE_MAX = 24
+
+/**
+ * The status line while agents run, else undefined: `⚙ 2 agents running`,
+ * or with `withTitle` (a phone is watching, where the deck is no pane) the
+ * short variant naming the newest running agent: `⚙ 2 · Find auth middleware`.
+ */
+export function statusText(cards: readonly AgentDeckCard[], withTitle = false): string | undefined {
   const running = countByStatus(cards).running
   if (running === 0) return undefined
+  const newest = withTitle ? newestRunning(cards) : undefined
+  if (newest !== undefined && newest.title.length > 0) {
+    return `⚙ ${running} · ${truncate(newest.title, STATUS_TITLE_MAX)}`
+  }
   return `⚙ ${running} agent${running === 1 ? '' : 's'} running`
+}
+
+/** A clock time as `HH:MM:SS` (local), for "as of" stamps. */
+export function formatClock(ms: number): string {
+  const at = new Date(ms)
+  const two = (n: number): string => String(n).padStart(2, '0')
+  return `${two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`
+}
+
+/** What starts the text of an inline deck, which the CommandOutput hook draws as cards. */
+export const INLINE_HEAD = 'Agent deck ·'
+
+/** The glyph a card's status draws with. */
+export function statusGlyph(status: AgentDeckStatus): string {
+  return status === 'running' ? '●' : status === 'failed' ? '✗' : '✓'
+}
+
+/** `model · type`, the parts known. */
+export function metaLine(card: AgentDeckCard): string {
+  return [shortModel(card.model), card.type].filter((part): part is string => part !== undefined && part.length > 0).join(' · ')
+}
+
+/** The current tool (`▸ Grep "foo"`) or the last one (`last Read x.ts`), else undefined. */
+export function toolLine(card: AgentDeckCard): string | undefined {
+  if (card.currentTool !== undefined && card.status === 'running') return `▸ ${card.currentTool}`
+  const tool = card.currentTool ?? card.lastTool
+  return tool === undefined ? undefined : `last ${tool}`
+}
+
+/**
+ * The deck as markdown text, for a surface with no pane (the phone): what the
+ * model reads, and what a surface draws when no hook draws the cards. A
+ * snapshot, stamped `as of HH:MM:SS`.
+ */
+export function inlineDeckText(cards: readonly AgentDeckCard[], now: number): string {
+  const list = orderCards(cards)
+  const head = `${INLINE_HEAD} ${headerText(list)} · as of ${formatClock(now)}`
+  if (list.length === 0) return `${head}\nCards appear here when Claude spawns a subagent.`
+  const lines = list.map(card => {
+    const parts = [`${statusGlyph(card.status)} **${card.title}**`, metaLine(card), formatElapsed(elapsedOf(card, now))]
+    const tool = toolLine(card)
+    if (tool !== undefined) parts.push(tool)
+    if (card.note !== undefined) parts.push(card.note)
+    return `- ${parts.filter(part => part.length > 0).join(' · ')}`
+  })
+  return [head, ...lines].join('\n')
 }
 
 /** Running cards first (oldest first), then finished ones, latest to end first. */

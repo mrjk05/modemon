@@ -1,7 +1,7 @@
 {
   "name": "checklist",
   "version": "0.1.0",
-  "description": "Persistent per-repo checklist that both you and Claude can work through: a model tool, a /checklist command, a progress band above the prompt and a pane.",
+  "description": "Persistent per-repo checklist that both you and Claude can work through: a model tool, a /checklist command, a progress band above the prompt, a status line and a pane (inline list with tappable ticks on mobile).",
   "author": { "name": "mrjk05" },
   "license": "MIT",
   "types": "./types/index.d.ts",
@@ -10,6 +10,12 @@
       "type": "boolean",
       "title": "Show progress band",
       "description": "Draw the checklist progress band above the prompt while the list has items.",
+      "default": true
+    },
+    "showStatus": {
+      "type": "boolean",
+      "title": "Show status line",
+      "description": "Show a short status entry (e.g. ☑ 3/7 · next: Write tests) while the list has items, on every surface; it is the checklist's only always-on view on the Claude mobile app.",
       "default": true
     },
     "nudge": {

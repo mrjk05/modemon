@@ -1,6 +1,6 @@
 # checklist
 
-A persistent, per-repo checklist that you and Claude share. Claude gets a `checklist` tool to plan and tick off work, you get `/checklist`, a progress band above the prompt, and a pane with the full list.
+A persistent, per-repo checklist that you and Claude share. Claude gets a `checklist` tool to plan and tick off work, you get `/checklist`, a progress band above the prompt, a status line, and a pane with the full list. It works on the terminal, the desktop Code tab and the Claude mobile app.
 
 ```
  ╭─ Checklist ─────────────────────────────────────────╮
@@ -32,18 +32,33 @@ Answer `y` to add the marketplace, then pick a scope. Built against Claude Code 
 
 | Command | What it does |
 | --- | --- |
-| `/checklist` | Opens the pane, or closes it if it is already open |
+| `/checklist` | Opens the pane, or closes it if it is already open. Where no pane can be placed (mobile, or a narrow terminal) it shows the list inline instead |
 | `/checklist add <text>` | Adds an item |
 | `/checklist done <n>` | Marks item `n` done (`done 2,3` marks several) |
 | `/checklist undo <n>` | Puts item `n` back to todo |
 | `/checklist rm <n>` | Removes item `n` |
 | `/checklist clear` | Removes every done item |
 | `/checklist start <n>` | Marks item `n` as in progress |
-| `/checklist list` | Prints the list as text |
+| `/checklist list` | Shows the list inline, with tappable ticks |
 
 `n` is the item number shown as `#n`. Numbers stay the same when other items are removed. New items get the next number after the highest one in the list.
 
-In the pane, click (or focus and press Enter on) `☐` / `◐` / `☑` to tick or untick an item, `✕` to remove it, and `Clear done` to drop finished items.
+In the pane and in the inline list, click or tap (or focus and press Enter on) `☐` / `◐` / `☑` to tick or untick an item, `✕` to remove it, and `Clear done` to drop finished items.
+
+## Surfaces
+
+| | Terminal | Desktop (Code tab) | Mobile app |
+| --- | --- | --- | --- |
+| Band above the prompt | yes | yes | not raised there |
+| Status line `☑ 3/7 · next: …` | yes | yes | yes |
+| Pane | yes (docked or inline) | yes | never placed |
+| `/checklist` inline list with tappable ticks | when the pane cannot be placed, and for `/checklist list` | same | always |
+| Tool, slash command, nudge | yes | yes | yes |
+
+- **Band.** It shares the row with other band mods (context-bar, project-color, ...): it draws its line, then asks the hooks beneath (`next(e)`) and stacks what they draw under it in a column. When they draw nothing, the checklist line is drawn alone.
+- **Status line.** Shown while the list has items, on every surface, because surfaces can attach and detach mid-session (a phone joining a cloud or Remote Control session). It is the only checklist view the mobile app shows without you asking. On the terminal it repeats the band's numbers in one short entry. Turn it off with `showStatus: false`. The next item's text is cut to 40 characters there.
+- **Inline list.** `/checklist` with no arguments draws the list as the command's output row whenever the pane cannot be placed (`$.ui.open` answers `isPlaced: false`). On mobile it always does, since the app never docks a pane. `/checklist list` always draws it. The buttons work like the pane's and the row redraws live. The text the model reads is still the plain list. The tree uses only `Box`, `Text` and `Button`, which every surface has, and item text is cut to the width the surface reports.
+- **Pane.** It uses the same elements, so it is mobile-safe if a future app version places panes.
 
 ## How Claude uses it
 
@@ -70,6 +85,7 @@ The plugin's rows in `/config` (`pluginConfigs.checklist.options` in settings):
 | Option | Default | |
 | --- | --- | --- |
 | `showBand` | `true` | Draw the progress band above the prompt |
+| `showStatus` | `true` | Show the `☑ 3/7 · next: …` status line while the list has items |
 | `nudge` | `true` | Add the keep-going section to the system prompt |
 
 ## Storage
@@ -82,5 +98,5 @@ Items are `{ id, text, status: 'todo' | 'doing' | 'done', createdAt, doneAt? }`.
 - The store is per machine and per user. It is not committed to the repo or synced anywhere.
 - The nudge is part of the system prompt, so a list change alters the session part of the prompt and costs some prompt-cache reuse on the next request. Turn it off with `nudge: false`.
 - Subagents whose system prompt is composed through the same hook may also see the open items.
-- The band is drawn on the terminal and desktop surfaces, the only ones that have the band. The pane, the command and the tool work everywhere.
+- The mobile app has no band and places no pane. There, the status line and the inline `/checklist` list replace them. Items can be ticked, unticked and removed by tapping. Adding an item still goes through `/checklist add <text>` or Claude, because the app draws no text field.
 - `/checklist add` adds one item per call. To add several at once, ask Claude, since the tool takes a list.
