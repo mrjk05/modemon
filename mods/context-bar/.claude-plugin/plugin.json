@@ -1,0 +1,29 @@
+{
+  "name": "context-bar",
+  "version": "0.1.0",
+  "description": "Live, colour-segmented context window bar above the prompt, split into ACTIVE and PASSIVE halves with an auto-compact marker.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "legend": {
+      "type": "boolean",
+      "title": "Show legend",
+      "description": "Show the per-category legend under the bar.",
+      "default": true
+    },
+    "warnAtHalf": {
+      "type": "boolean",
+      "title": "Warn at 50%",
+      "description": "Toast once per session when the context window passes 50%.",
+      "default": true
+    },
+    "statusLine": {
+      "type": "string",
+      "title": "Status line",
+      "description": "When to pin 'ctx 71%' under the prompt: auto (band hidden or a surface without the band), always, or off.",
+      "options": ["auto", "always", "off"],
+      "default": "auto"
+    }
+  }
+}
