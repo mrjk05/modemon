@@ -1,0 +1,98 @@
+{
+  "name": "deploy-deck",
+  "version": "0.1.0",
+  "description": "Live deploy tracker for GitHub Actions and Deployments, Vercel, Cloudflare Pages and Workers, and Render: a stage pipeline above the prompt, a /deploys panel, toasts and a status line. Read-only.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "githubToken": {
+      "type": "string",
+      "title": "GitHub token",
+      "description": "Read-only token (fine-grained: Actions read, Deployments read, Metadata read). Empty: the logged-in gh CLI is used.",
+      "default": "",
+      "sensitive": true
+    },
+    "vercelToken": {
+      "type": "string",
+      "title": "Vercel token",
+      "description": "A Vercel access token scoped to the team that owns the project. deploy-deck only sends GET requests with it.",
+      "default": "",
+      "sensitive": true
+    },
+    "vercelTeamId": {
+      "type": "string",
+      "title": "Vercel team id",
+      "description": "team_… of the team that owns the project. Empty: taken from .vercel/project.json (orgId) when it is a team.",
+      "default": ""
+    },
+    "cloudflareToken": {
+      "type": "string",
+      "title": "Cloudflare API token",
+      "description": "Account API token with Cloudflare Pages: Read and Workers Scripts: Read.",
+      "default": "",
+      "sensitive": true
+    },
+    "cloudflareAccountId": {
+      "type": "string",
+      "title": "Cloudflare account id",
+      "description": "The account the Pages project or Worker lives in. Empty: taken from account_id in wrangler.toml / wrangler.jsonc.",
+      "default": ""
+    },
+    "renderToken": {
+      "type": "string",
+      "title": "Render API key",
+      "description": "Render API key (Account settings → API keys). deploy-deck only sends GET requests with it.",
+      "default": "",
+      "sensitive": true
+    },
+    "targets": {
+      "type": "string",
+      "title": "Extra targets",
+      "description": "Comma-separated targets to track beside the detected ones, e.g. vercel:my-app, cloudflare-pages:site, cloudflare-workers:api, render:srv-123, github:owner/repo.",
+      "default": ""
+    },
+    "autoDetect": {
+      "type": "boolean",
+      "title": "Detect targets from the repo",
+      "description": "Read the git remote, .vercel/project.json, vercel.json, wrangler.toml/jsonc and render.yaml.",
+      "default": true
+    },
+    "useCli": {
+      "type": "boolean",
+      "title": "Fall back to the gh CLI",
+      "description": "Without a GitHub token, read GitHub through `gh api` (read-only GETs) when gh is logged in.",
+      "default": true
+    },
+    "fastSeconds": {
+      "type": "number",
+      "title": "Poll interval while deploying (seconds)",
+      "description": "How often targets are read while any deploy is in flight.",
+      "default": 10
+    },
+    "slowSeconds": {
+      "type": "number",
+      "title": "Poll interval when idle (seconds)",
+      "description": "How often targets are read while nothing is in flight.",
+      "default": 120
+    },
+    "band": {
+      "type": "boolean",
+      "title": "Band above the prompt",
+      "description": "Show in-flight deploys with their stage pipeline above the prompt.",
+      "default": true
+    },
+    "toasts": {
+      "type": "boolean",
+      "title": "Toast when a deploy finishes",
+      "description": "One toast per deploy when it goes live or fails.",
+      "default": true
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "Show the most important current deploy under the prompt (e.g. '🚀 vercel building 1:12').",
+      "default": true
+    }
+  }
+}

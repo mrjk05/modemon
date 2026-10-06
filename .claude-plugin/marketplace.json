@@ -48,6 +48,11 @@
       "description": "A stable colour per project: a coloured stripe above the prompt and a colour emoji in the status line, so sessions are easy to tell apart."
     },
     {
+      "name": "deploy-deck",
+      "source": "./mods/deploy-deck",
+      "description": "Live deployment tracker and panel for GitHub Actions, Vercel, Cloudflare and Render."
+    },
+    {
       "name": "decision-log",
       "source": "./mods/decision-log",
       "description": "Records project decisions as ADRs in the repo that Claude and you can look up later."

@@ -12,6 +12,7 @@ Open-source **mods** for [Claude Code](https://code.claude.com/docs/en/plugins/m
 | [`notify`](mods/notify) | Native desktop notifications when Claude needs input, finishes a long turn, hits an error, or a subagent completes. |
 | [`question-log`](mods/question-log) | Highlights every question Claude asks you and keeps a `/questions` log of questions and answers. |
 | [`project-color`](mods/project-color) | Gives each project its own colour: a stripe above the prompt and a colour emoji in the status line, so you can tell sessions apart at a glance. |
+| [`deploy-deck`](mods/deploy-deck) | Live deployment tracker and panel for GitHub Actions, Vercel, Cloudflare and Render: stage-by-stage progress above the prompt, latest versions in `/deploys`. |
 | [`decision-log`](mods/decision-log) | Records decisions as ADRs in `docs/decisions/` so you and Claude can go back to them later. |
 
 ## Install
