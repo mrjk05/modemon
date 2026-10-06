@@ -1,0 +1,35 @@
+{
+  "name": "project-color",
+  "version": "0.1.0",
+  "description": "A colour per project: a full-width stripe in the repo's colour above the prompt (stacked over other bands), a colour-emoji status line for mobile, and /color to pin or reset the colour per repo.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "stripe": {
+      "type": "boolean",
+      "title": "Show stripe",
+      "description": "Draw the full-width project stripe above the prompt (terminal and desktop).",
+      "default": true
+    },
+    "thickness": {
+      "type": "string",
+      "title": "Stripe thickness",
+      "description": "Rows the stripe takes: 1, or 2 for a thicker bar (falls back to 1 when the band is short).",
+      "options": ["1", "2"],
+      "default": "1"
+    },
+    "branch": {
+      "type": "boolean",
+      "title": "Show branch",
+      "description": "Show the checked-out git branch, dim, at the right end of the stripe (read from .git/HEAD).",
+      "default": true
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "Pin a status entry such as '🟣 modemon' under the prompt; it is the colour's only sign on the Claude mobile app.",
+      "default": true
+    }
+  }
+}
