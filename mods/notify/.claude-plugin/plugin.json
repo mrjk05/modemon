@@ -1,0 +1,52 @@
+{
+  "name": "notify",
+  "version": "0.1.0",
+  "description": "Native desktop notifications when Claude needs your input, finishes a long turn, hits an error, or a subagent finishes.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "onNeedsInput": {
+      "type": "boolean",
+      "title": "Notify when input is needed",
+      "description": "Permission prompts, idle prompts and AskUserQuestion dialogs.",
+      "default": true
+    },
+    "onTurnDone": {
+      "type": "boolean",
+      "title": "Notify when a long turn finishes",
+      "description": "A turn that ran longer than the minimum turn length below.",
+      "default": true
+    },
+    "minTurnSeconds": {
+      "type": "number",
+      "title": "Minimum turn length (seconds)",
+      "description": "Only turns that ran longer than this many seconds send a 'done' notification.",
+      "default": 30
+    },
+    "onError": {
+      "type": "boolean",
+      "title": "Notify on errors",
+      "description": "API errors and turns that failed.",
+      "default": true
+    },
+    "onSubagentDone": {
+      "type": "boolean",
+      "title": "Notify when a subagent finishes",
+      "description": "Names the agent's task in the notification.",
+      "default": true
+    },
+    "sound": {
+      "type": "string",
+      "title": "Sound (macOS)",
+      "description": "macOS sound name (Glass, Ping, Hero, Submarine, ...); empty for silent.",
+      "default": "Glass"
+    },
+    "onlyWhenUnfocused": {
+      "type": "boolean",
+      "title": "Only when the terminal is in the background",
+      "description": "macOS: skip notifications while your terminal app is the frontmost app. Ignored where focus cannot be read.",
+      "default": true
+    }
+  }
+}
