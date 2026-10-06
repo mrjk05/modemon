@@ -1,0 +1,22 @@
+{
+  "name": "decision-log",
+  "version": "0.1.0",
+  "description": "Architecture decision records you and Claude can go back to: ADR markdown files in the repo (docs/decisions/NNNN-slug.md), a `decision` tool for Claude, /decide to record your own, and /decisions to browse them (pane on terminal and desktop, inline card on mobile).",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "dir": {
+      "type": "string",
+      "title": "Decisions folder",
+      "description": "Folder for the decision records, relative to the repository root (no '..', not absolute).",
+      "default": "docs/decisions"
+    },
+    "nudge": {
+      "type": "boolean",
+      "title": "System-prompt note",
+      "description": "Add a short system-prompt section telling Claude the log exists, when to record a decision and when to search it.",
+      "default": true
+    }
+  }
+}
