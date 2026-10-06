@@ -1,0 +1,22 @@
+{
+  "name": "agent-deck",
+  "version": "0.1.0",
+  "description": "Side pane showing every subagent of the session: status, model, type, task title, prompt summary, elapsed time and what it is doing.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open on first subagent",
+      "description": "Open the agent deck by itself when the first subagent spawns, only where it docks as a sidebar (fullscreen layout, wide terminal).",
+      "default": true
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "Show a status line (e.g. '⚙ 2 agents running') while subagents run.",
+      "default": true
+    }
+  }
+}
