@@ -1,0 +1,4 @@
+# Laid down by Claude Code when a mod is loaded from disk
+mods/*/.claude-plugin/types/
+node_modules/
+.DS_Store
