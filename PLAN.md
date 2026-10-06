@@ -20,6 +20,20 @@ Built against Claude Code **2.1.290** (the mods API is early access and may chan
 - Render on every surface (`terminal`, `desktop`); degrade gracefully where an element is missing.
 - `claude plugin validate`, `claude plugin test` and `tsc` must be clean before pushing.
 
+## Surfaces: terminal, desktop and mobile
+
+Every mod must work on the **terminal**, **desktop** (Code tab) and the **Claude mobile app** (watching a cloud or Remote Control session). Mods run in the engine, wherever the session runs. The phone only draws what they hand it.
+
+- **Mobile elements**: `Box`, `Text`, `Button`, `Svg`, `Link`, `Code`, `Markdown`. No `Input`, `Select`, `Raster`, `Image`, `Client`. Narrow on `e.surface` before using anything outside that set.
+- **Not raised on mobile**: `AbovePrompt`, `PromptHint`, `SessionMode`. Mobile reports `viewport.isFullscreen === false`, so it never docks a pane.
+- **Mobile fallbacks**, in order of preference:
+  1. `$.ui.status(text)`: a short, emoji-friendly status entry.
+  2. Slash-command output drawn as a tree via `ui.render` on `{ component: 'CommandOutput', props: { command: '<cmd>' } }`. Use `Markdown` or `Box`/`Text`, compact, sized to `e.viewport.columns`.
+  3. `$.ui.toast` for one-off nudges.
+  4. When `$.ui.open` answers `isPlaced: false`, answer the command inline instead.
+- **Sharing the band** (`AbovePrompt`, one instance for all plugins): never swallow it. Draw your part, then `const below = await next(e)` and stack the two (yours first) in a column `Box`, leaving `below` out when it draws nothing. Every band mod does this, so they all show together.
+- **Tests**: every UI mount test loops over `['terminal', 'desktop', 'mobile'] as const` for components that mobile raises (`Pane`, `CommandOutput`, transcript rows), and over terminal and desktop for `AbovePrompt`. At least one test proves the mobile fallback (status text or command output).
+
 ## The mods
 
 ### 1. `context-bar`: live context window
@@ -60,12 +74,18 @@ Built against Claude Code **2.1.290** (the mods API is early access and may chan
 - Fires when: **permission/input needed** (`classic.Notification`, AskUserQuestion); **turn finished** after more than `minTurnSeconds` (default 30); **errors** (API errors, failed turns); **subagent done**.
 - Delivery: macOS `terminal-notifier` if installed (click focuses the terminal), otherwise `osascript display notification … sound name "Glass"`; Linux `notify-send`. Via `$.process.run`.
 - Config: toggles per trigger, `minTurnSeconds`, `sound`, `onlyWhenUnfocused`. `/notify test` sends a sample.
+- **Phone push** (optional): set `ntfyTopic` (and optionally `ntfyServer`, default `https://ntfy.sh`) and every notification is also POSTed there, so the ntfy app on your phone buzzes. This works from cloud sessions too, where there is no desktop.
 
 ### 7. `question-log`: highlighted questions and a Q&A log
 - Captures **AskUserQuestion** (questions, options, answers) and **detected questions**: assistant replies whose final paragraph asks the user something.
 - **Highlight**: detected-question assistant messages get a bordered, coloured box with a `?` badge.
 - **Log pane** via `/questions`: every question in order, with answer or `open`, timestamps.
 - **Status line**: `? 2 open`. A detected question counts as answered when you send your next prompt.
+
+### 8. `project-color`: a colour per project
+- **Stripe above the prompt**: a full-width bar in the project's colour with the project name, e.g. `▌ modemon ▐` on a solid colour background. It is shown on top of any other band and composes with them via `next(e)`.
+- **Colour choice**: picked automatically from a 12-colour palette, the same colour every time for the same repo, and readable in light and dark themes. `/color <name|#hex>` pins a colour for the repo (saved in `$.store`), `/color auto` resets it, `/color` lists the palette.
+- **Mobile**: the band is not raised there, so the status line shows `● modemon` with a colour emoji (🟣🔵🟢🟡🟠🔴 …) matched to the palette.
 
 ## Delivery
 All seven built in parallel, each validated, tested and type-checked, then pushed to `main`. Per-mod deviations and limitations are listed in each mod's README.

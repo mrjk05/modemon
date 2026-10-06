@@ -11,6 +11,7 @@ Open-source **mods** for [Claude Code](https://code.claude.com/docs/en/plugins/m
 | [`casual`](mods/casual) | Short, conversational replies ("hey, here's where we're at") and a quieter transcript. |
 | [`notify`](mods/notify) | Native desktop notifications when Claude needs input, finishes a long turn, hits an error, or a subagent completes. |
 | [`question-log`](mods/question-log) | Highlights every question Claude asks you and keeps a `/questions` log of questions and answers. |
+| [`project-color`](mods/project-color) | Gives each project its own colour: a stripe above the prompt and a colour emoji in the status line, so you can tell sessions apart at a glance. |
 
 ## Install
 
@@ -23,6 +24,10 @@ In a Claude Code terminal session:
 for example `/plugin install context-bar --marketplace mrjk05/modemon`. Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session).
 
 Each mod is independent. Install the ones you want.
+
+## Works on terminal, desktop and phone
+
+Mods run inside Claude Code wherever the session runs (your Mac or a cloud session), and every surface draws what they hand it: the terminal, the desktop app's Code tab, and the Claude mobile app when you watch a session from your phone. The mobile app draws fewer elements and has no band above the prompt or docked panes, so each mod falls back to a status-line entry and inline command output there. Each mod's README has a *Surfaces* section saying what shows where.
 
 ## Develop
 
