@@ -25,6 +25,19 @@ In a Claude Code terminal session:
 
 for example `/plugin install context-bar --marketplace mrjk05/modemon`. Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session).
 
+Or add the marketplace once and install by name:
+
+```
+/plugin marketplace add mrjk05/modemon
+/plugin install context-bar@modemon
+```
+
+From your shell, the equivalent is `claude plugin install context-bar --marketplace mrjk05/modemon`.
+
+> **Gotchas**
+> - `/plugin` works in a terminal Claude Code session only. The desktop app's Code tab says it isn't available there, but mods you install from the terminal at user scope load in the desktop app too.
+> - Type two plain hyphens in `--marketplace`. macOS smart punctuation can turn `--` into an em dash (`—`), and then the flag is ignored and you get `Plugin "…" not found in any marketplace`.
+
 Each mod is independent. Install the ones you want.
 
 ## Works on terminal, desktop and phone
