@@ -1,0 +1,59 @@
+{
+  "name": "pii-shield",
+  "version": "0.1.0",
+  "description": "Masks emails, names, account numbers and secrets on screen while you screen-record. Display only: the model and the transcript keep the real values.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "auto: redact once a screen recorder or screen share is detected (polled every 5s). on: always redact. off: never redact. /redact overrides this for the session.",
+      "default": "auto",
+      "options": ["auto", "on", "off"]
+    },
+    "names": {
+      "type": "string",
+      "title": "Extra names to mask",
+      "description": "Comma-separated names or words to mask (people, clients, projects). Your OS username and git user.name are added automatically.",
+      "default": ""
+    },
+    "maskContact": {
+      "type": "boolean",
+      "title": "Mask emails and phone numbers",
+      "description": "Email addresses, international (+..) and US phone numbers.",
+      "default": true
+    },
+    "maskNetwork": {
+      "type": "boolean",
+      "title": "Mask IP addresses",
+      "description": "IPv4 and IPv6 addresses (loopback and 0.0.0.0 are left alone).",
+      "default": true
+    },
+    "maskFinancial": {
+      "type": "boolean",
+      "title": "Mask financial numbers",
+      "description": "Card numbers (Luhn-checked), IBANs (checksum-checked), US SSNs, bank account, routing and sort codes.",
+      "default": true
+    },
+    "maskSecrets": {
+      "type": "boolean",
+      "title": "Mask secrets",
+      "description": "API keys and tokens, JWTs, Bearer tokens, private key blocks, URL passwords and KEY=value assignments with secret-ish names.",
+      "default": true
+    },
+    "maskNames": {
+      "type": "boolean",
+      "title": "Mask names",
+      "description": "The extra names above, your OS username and your git user.name.",
+      "default": true
+    },
+    "maskPaths": {
+      "type": "boolean",
+      "title": "Mask home-folder usernames",
+      "description": "/Users/<you>/ and /home/<you>/ become /Users/████/.",
+      "default": true
+    }
+  }
+}

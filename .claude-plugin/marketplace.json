@@ -1,13 +1,46 @@
 {
   "name": "modemon",
-  "owner": { "name": "mrjk05" },
+  "owner": {
+    "name": "mrjk05"
+  },
+  "metadata": {
+    "description": "Open-source Claude Code mods: context bar, PII shield, agent deck, checklist, casual replies, notifications, question log."
+  },
   "plugins": [
-    { "name": "context-bar", "source": "./mods/context-bar", "description": "Live, colour-segmented context window bar with an active | passive split at 50%." },
-    { "name": "pii-shield", "source": "./mods/pii-shield", "description": "Masks emails, names, account numbers and secrets on screen while you screen-record." },
-    { "name": "agent-deck", "source": "./mods/agent-deck", "description": "Side pane showing every running subagent: model, type, task title and what it is doing." },
-    { "name": "checklist", "source": "./mods/checklist", "description": "Persistent per-repo checklist that both you and Claude can work through." },
-    { "name": "casual", "source": "./mods/casual", "description": "Short, conversational replies and a quieter transcript." },
-    { "name": "notify", "source": "./mods/notify", "description": "Native desktop notifications when Claude needs you, finishes, or hits an error." },
-    { "name": "question-log", "source": "./mods/question-log", "description": "Highlights every question Claude asks and keeps a log of questions and answers." }
+    {
+      "name": "context-bar",
+      "source": "./mods/context-bar",
+      "description": "Live, colour-segmented context window bar with an active | passive split at 50%."
+    },
+    {
+      "name": "pii-shield",
+      "source": "./mods/pii-shield",
+      "description": "Masks emails, names, account numbers and secrets on screen while you screen-record."
+    },
+    {
+      "name": "agent-deck",
+      "source": "./mods/agent-deck",
+      "description": "Side pane showing every running subagent: model, type, task title and what it is doing."
+    },
+    {
+      "name": "checklist",
+      "source": "./mods/checklist",
+      "description": "Persistent per-repo checklist that both you and Claude can work through."
+    },
+    {
+      "name": "casual",
+      "source": "./mods/casual",
+      "description": "Short, conversational replies and a quieter transcript."
+    },
+    {
+      "name": "notify",
+      "source": "./mods/notify",
+      "description": "Native desktop notifications when Claude needs you, finishes, or hits an error."
+    },
+    {
+      "name": "question-log",
+      "source": "./mods/question-log",
+      "description": "Highlights every question Claude asks and keeps a log of questions and answers."
+    }
   ]
 }

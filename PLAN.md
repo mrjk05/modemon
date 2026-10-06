@@ -33,9 +33,9 @@ Built against Claude Code **2.1.290** (the mods API is early access and may chan
 ### 2. `pii-shield`: redact PII on screen while recording
 - **Screen only**: rewrites what's drawn (`ui.render` on AssistantMessage, UserMessage, ToolUse, ToolResult, CommandOutput). The model and the transcript keep real values.
 - **Masks**: emails, phone numbers, IPv4/IPv6; card numbers (Luhn-checked), IBAN, US SSN, bank account/sort codes; secrets (`sk-…`, `ghp_…`, AWS `AKIA…`, JWTs, `Bearer …`, private-key blocks, `KEY=value` env assignments with secret-ish names); names from a user-supplied list plus the OS/git username; home-directory usernames in paths (`/Users/jins/` → `/Users/████/`).
-- **Activation**: `/redact on|off|auto`. In `auto` (default) it polls every 5s via `$.process.run` for known recorders/sharers (QuickTime, `screencaptureui`, OBS, Loom, CleanShot, Kap, ScreenFlow, Zoom/Teams/Meet sharing helpers, Linux: `wf-recorder`, `obs`, `simplescreenrecorder`, `kooha`) and turns redaction on. It never turns itself off automatically while a recorder was seen this session (sticky), unless the user runs `/redact off`.
+- **Activation**: `/redact on|off|auto`. In `auto` (default) it polls every 5s via `$.process.run` for known recorders/sharers (QuickTime, `screencaptureui`, OBS, Loom, CleanShot, Kap, ScreenFlow, Zoom sharing (`CptHost`), Screen Studio, Camtasia, Linux: `wf-recorder`, `obs`, `simplescreenrecorder`, `kooha`) and turns redaction on. It never turns itself off automatically while a recorder was seen this session (sticky), unless the user runs `/redact off`.
 - Status badge: `● REDACTING` / `○ pii-shield`.
-- **Limit (documented)**: macOS has no public "am I being captured" API, so detection is heuristic. Use `/redact on` before recording to be sure.
+- **Limit (documented)**: browser-based sharing (Meet, Teams web) is not detected. macOS has no public "am I being captured" API, so detection is heuristic. Use `/redact on` before recording to be sure.
 
 ### 3. `agent-deck`: subagent side pane
 - Side pane (`/agents` toggles it; opens by itself when the first subagent spawns and the terminal is wide enough).
@@ -68,4 +68,4 @@ Built against Claude Code **2.1.290** (the mods API is early access and may chan
 - **Status line**: `? 2 open`. A detected question counts as answered when you send your next prompt.
 
 ## Delivery
-All seven built in parallel, each validated and tested, pushed to `main`.
+All seven built in parallel, each validated, tested and type-checked, then pushed to `main`. Per-mod deviations and limitations are listed in each mod's README.
