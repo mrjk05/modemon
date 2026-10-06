@@ -1,0 +1,23 @@
+{
+  "name": "casual",
+  "version": "0.1.0",
+  "description": "Short, conversational replies like a teammate on Slack, with tool-call noise folded into one-line summaries.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "verbosity": {
+      "type": "string",
+      "title": "Verbosity",
+      "description": "chill: 1-4 friendly sentences. brief: 1-2 sentences, no small talk.",
+      "options": ["chill", "brief"],
+      "default": "chill"
+    },
+    "collapseTools": {
+      "type": "boolean",
+      "title": "Collapse tool rows",
+      "description": "Fold finished tool calls and their results into one dim line while casual is on.",
+      "default": true
+    }
+  }
+}
