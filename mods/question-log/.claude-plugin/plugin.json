@@ -1,0 +1,22 @@
+{
+  "name": "question-log",
+  "version": "0.1.0",
+  "description": "Highlights assistant replies that end by asking you something, logs every AskUserQuestion and detected question with its answer, and shows them in a /questions pane with a '? N open' status line.",
+  "author": { "name": "mrjk05" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "detectQuestions": {
+      "type": "boolean",
+      "title": "Detect questions in replies",
+      "description": "Log an assistant reply whose final paragraph asks you something as an open question, answered by your next prompt.",
+      "default": true
+    },
+    "highlight": {
+      "type": "boolean",
+      "title": "Highlight question replies",
+      "description": "Draw replies detected as questions in a coloured, bordered box with a '? Question for you' header.",
+      "default": true
+    }
+  }
+}
