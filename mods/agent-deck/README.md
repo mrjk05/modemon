@@ -42,6 +42,32 @@ Each card shows:
 
 While any subagent runs, a status line under the prompt reads `⚙ 2 agents running`.
 
+### Card buttons
+
+Under each card is a row of buttons. Click one, or focus the pane and use the keys below.
+
+| Button | What it does |
+| --- | --- |
+| `▸ prompt` / `▾ less` | Show or hide the full prompt the agent was given (up to 2,000 characters) |
+| `■ stop` | Stop a running agent. The deck calls the `TaskStop` tool, the same one Claude uses, so your permission settings apply and you may be asked first. The card then reads `stopping…`, and turns red with `stopped from the deck` when the agent stops. If the stop is refused, a toast says why and the card keeps running |
+| `✕ dismiss` | Remove one finished card |
+| `Clear finished` | Remove every finished card (the same as `/agents clear`) |
+
+### Using the deck from the keyboard
+
+`/agents` opens the deck **with the keyboard focus**. To return to it later, press `ctrl+x tab` or click inside it.
+
+| Key | What it does |
+| --- | --- |
+| `1`–`9` | Expand or collapse the prompt of the card in that position |
+| `c` | Clear finished cards |
+| `Tab` / arrows | Move between the card buttons |
+| `Enter` | Press the focused button |
+| `Esc` | Give the keyboard back to the prompt |
+| `ctrl+x x` | Close the pane |
+
+On the terminal, the last row of the deck shows which keys work right now. The deck docks as a sidebar only in the fullscreen layout (`/tui fullscreen`). In the default layout it opens above the prompt. It shares the dock with other panes (such as the checklist) as tabs.
+
 On the desktop app the same cards are drawn as bordered boxes coloured by status.
 
 ## Surfaces: terminal, desktop and mobile

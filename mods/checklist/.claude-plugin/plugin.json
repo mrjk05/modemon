@@ -1,8 +1,10 @@
 {
   "name": "checklist",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Persistent per-repo checklist that both you and Claude can work through: a model tool, a /checklist command, a progress band above the prompt, a status line and a pane (inline list with tappable ticks on mobile).",
-  "author": { "name": "mrjk05" },
+  "author": {
+    "name": "mrjk05"
+  },
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -22,6 +24,12 @@
       "type": "boolean",
       "title": "Keep-going nudge",
       "description": "Add a short system-prompt section listing open items and asking Claude to work through them.",
+      "default": true
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open as a sidebar",
+      "description": "Open the checklist pane by itself, once per session, when the list has open items and it would dock as a sidebar (fullscreen layout, terminal at least 144 columns wide).",
       "default": true
     }
   }

@@ -19,6 +19,8 @@ export type AgentDeckCard = {
   title: string;
   /** One-line summary of the prompt. */
   summary: string;
+  /** The prompt as given (capped), shown when the card is expanded. */
+  prompt?: string;
   /** Model: the resolved id when known, else the alias asked for. */
   model?: string;
   /** Epoch milliseconds. */
@@ -47,6 +49,10 @@ declare module 'claude-code' {
       cwd: string;
       /** True while the Claude mobile app is among the session's surfaces. */
       phoneWatching: boolean;
+      /** Keys of the cards expanded in the pane to show their full prompt. */
+      expanded: string[];
+      /** Keys of running cards a stop was asked for, until they end. */
+      stopping: string[];
     };
   }
 }

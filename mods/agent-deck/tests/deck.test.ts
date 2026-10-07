@@ -79,7 +79,7 @@ test('an Agent tool call draws a running card that ticks, then finishes', async 
     const ui = await $.ui.mount({ plugin: 'agent-deck', surface, component: 'Pane', requestId: PANE, props: PANE_PROPS, viewport: VIEWPORT })
     expect(await ui.find({ type: 'Text', text: /1 done/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^3s$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /\/agents clear/ })).toBeDefined()
+    expect(await ui.find({ key: 'clear-finished' })).toBeDefined()
     await ui.unmount()
   }
   expect(statuses.at(-1)).toBeUndefined()
@@ -328,4 +328,83 @@ test('with a phone attached, the status line names the newest running agent', as
   // Asked from the phone, /agents answers inline whatever the panes.
   const ran = await $.command.run({ command: 'agents', args: '', origin: { kind: 'bridge' }, presentation: AT_160 })
   expect(ran.text ?? '').toMatch(/^Agent deck · 1 running · as of/)
+})
+
+test('card buttons expand the prompt, stop a running agent and dismiss a finished one', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  let n = 0
+  on('tool.call', { tool: 'Agent' }, () => {
+    n += 1
+    return {
+      result: {
+        status: 'async_launched' as const,
+        agentId: `agent-${n}`,
+        description: 'x',
+        prompt: 'x',
+        outputFile: `/tmp/agent-${n}.out`,
+        resolvedModel: 'claude-haiku-4-5-20251001',
+      },
+    }
+  })
+  const stopped: string[] = []
+  on('tool.call', { tool: 'TaskStop' }, (_$, e) => {
+    stopped.push(String(e.task_id))
+    return { result: { message: 'stopped', task_id: String(e.task_id), task_type: 'local_agent' } }
+  })
+
+  const longPrompt = 'Find the JWT check.\nThen trace every caller of verifyJwt and list them with file and line, ' + 'detail '.repeat(30)
+  await $.tool.call({ tool: 'Agent', description: 'Trace JWT', prompt: longPrompt, subagent_type: 'Explore' })
+  await $.tool.call({ tool: 'Agent', description: 'Summarise README', prompt: 'Summarise README.md' })
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-2', reason: 'answer' })
+
+  const props = { ...PANE_PROPS, isFocused: true }
+  const ui = await $.ui.mount({ plugin: 'agent-deck', surface: 'terminal', component: 'Pane', requestId: PANE, props, viewport: VIEWPORT })
+  // Running first: card 1 is the JWT trace, with digit hotkey 1.
+  const expand = (await ui.findAll({ type: 'Button' })).find(b => String(b.key).startsWith('expand:'))
+  expect(expand?.props.hotkey).toBe('1')
+  expect(await ui.find({ type: 'Text', text: /detail detail detail detail detail detail detail detail detail detail detail/ })).toBeUndefined()
+  await ui.press({ key: String(expand?.key) })
+  expect(await ui.find({ type: 'Text', text: /detail detail detail detail detail detail detail detail detail detail detail/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Esc back/ })).toBeDefined()
+
+  // Stop goes through the TaskStop tool with the agent's id.
+  const stop = (await ui.findAll({ type: 'Button' })).find(b => String(b.key).startsWith('stop:'))
+  await ui.press({ key: String(stop?.key) })
+  expect(stopped).toEqual(['agent-1'])
+  expect(await ui.find({ type: 'Text', text: /stopped from the deck/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2 failed|1 failed/ })).toBeDefined()
+
+  // Dismiss removes one finished card; Clear finished removes the rest.
+  const dismissals = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('dismiss:'))
+  expect(dismissals).toHaveLength(2)
+  await ui.press({ key: String(dismissals[0]?.key) })
+  expect((await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('dismiss:'))).toHaveLength(1)
+  await ui.press({ key: 'clear-finished' })
+  expect(await ui.find({ type: 'Text', text: /No subagents yet/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a refused stop leaves the agent running and says why', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  on('ui.status', () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('tool.call', { tool: 'Agent' }, () => ({
+    result: { status: 'async_launched' as const, agentId: 'agent-1', description: 'x', prompt: 'x', outputFile: '/tmp/a', resolvedModel: 'm' },
+  }))
+  on('tool.call', { tool: 'TaskStop' }, () => ({ deny: 'The user said no.' }))
+  await $.tool.call({ tool: 'Agent', description: 'Long job', prompt: 'Do the long job' })
+  const ui = await $.ui.mount({ plugin: 'agent-deck', surface: 'terminal', component: 'Pane', requestId: PANE, props: PANE_PROPS, viewport: VIEWPORT })
+  const stop = (await ui.findAll({ type: 'Button' })).find(b => String(b.key).startsWith('stop:'))
+  await ui.press({ key: String(stop?.key) })
+  expect(toasts.at(-1)).toContain('The user said no.')
+  expect(await ui.find({ type: 'Text', text: /1 running/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /ctrl\+x tab/ })).toBeDefined()
+  await ui.unmount()
 })

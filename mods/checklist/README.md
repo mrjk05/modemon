@@ -45,6 +45,25 @@ Answer `y` to add the marketplace, then pick a scope. Built against Claude Code 
 
 In the pane and in the inline list, click or tap (or focus and press Enter on) `☐` / `◐` / `☑` to tick or untick an item, `✕` to remove it, and `Clear done` to drop finished items.
 
+### Using the pane from the keyboard
+
+`/checklist` opens the pane **with the keyboard focus**. If you clicked back into the prompt, press `ctrl+x tab` to focus the pane again, or click inside it.
+
+| Key | What it does |
+| --- | --- |
+| `1`–`9` | Tick or untick the item in that position (the first nine rows) |
+| `c` | Clear done items |
+| `Tab` / arrows | Move between the buttons: tick, `▸` (start), `✕` (remove), and the add field |
+| `Enter` | Press the focused button, or add the text typed in the `+` field |
+| `Esc` | Give the keyboard back to the prompt (the pane stays open) |
+| `ctrl+x x` | Close the pane |
+
+In the pane, `▸` next to a todo item marks it in progress, and the `+` field at the bottom adds an item (terminal, desktop and VS Code only, since the mobile app has no text field). On the terminal, the last row reminds you which keys work.
+
+### Opening as a sidebar
+
+Panes dock beside the transcript only in the **fullscreen layout** (`/tui fullscreen`). In the default inline layout, a pane opens above the prompt instead. In fullscreen, with a terminal at least 144 columns wide, the pane opens by itself once per session when the list has open items: at session start, or when Claude adds work. Turn this off with `autoOpen: false`. All panes share one dock and show as tabs (Checklist, Agents, …), so click a tab, or Tab onto it and press Enter, to switch.
+
 ## Surfaces
 
 | | Terminal | Desktop (Code tab) | Mobile app |
@@ -84,6 +103,7 @@ The plugin's rows in `/config` (`pluginConfigs.checklist.options` in settings):
 
 | Option | Default | |
 | --- | --- | --- |
+| `autoOpen` | `true` | Open the pane by itself, once a session, when it would dock as a sidebar and the list has open items |
 | `showBand` | `true` | Draw the progress band above the prompt |
 | `showStatus` | `true` | Show the `☑ 3/7 · next: …` status line while the list has items |
 | `nudge` | `true` | Add the keep-going section to the system prompt |
