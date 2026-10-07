@@ -336,3 +336,72 @@ test('/checklist output: inline list when the pane is not placed or for list, th
     await opened.unmount()
   }
 })
+
+test('the pane gives the first nine ticks digit hotkeys, c to clear, a start mark and an add field', async ($, on) => {
+  const store = world(on)
+  await startSession($)
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'] })
+
+  const pane = await $.ui.mount({ plugin: 'checklist', surface: 'terminal', component: 'Pane', requestId: 'checklist', props: PANE_PROPS })
+  expect((await pane.find({ key: 'tick-1' }))?.props.hotkey).toBe('1')
+  expect((await pane.find({ key: 'tick-9' }))?.props.hotkey).toBe('9')
+  expect((await pane.find({ key: 'tick-10' }))?.props.hotkey).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /1-9 tick/ })).toBeDefined()
+
+  await pane.press({ key: 'start-2' })
+  expect((await pane.find({ key: 'tick-2' }))?.props.label).toBe('◐')
+  expect(await pane.find({ key: 'start-2' })).toBeUndefined()
+
+  await pane.press({ key: 'tick-1' })
+  expect((await pane.find({ key: 'clear-done' }))?.props.hotkey).toBe('c')
+
+  await pane.input({ key: 'add', text: '  Ship it  ' })
+  await pane.input({ key: 'add', text: '   ' })
+  const stored = store.get(`list:${ROOT}`) as { id: number; text: string }[]
+  expect(stored.map(item => item.text).at(-1)).toBe('Ship it')
+  expect(stored).toHaveLength(11)
+  await pane.unmount()
+
+  // The inline list keeps the old shape: no hotkeys, no add field.
+  const inline = await $.ui.mount({
+    plugin: 'checklist',
+    surface: 'mobile',
+    component: 'Pane',
+    requestId: 'checklist',
+    props: PANE_PROPS,
+  })
+  expect(await inline.find({ key: 'add' })).toBeUndefined()
+  await inline.unmount()
+})
+
+test('the pane opens by itself once, docked, when Claude adds work', async ($, on) => {
+  world(on)
+  const opened: { id: string; focus?: boolean }[] = []
+  on('ui.open', (_$, e) => {
+    opened.push({ id: e.id, ...(e.focus === true ? { focus: true } : {}) })
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.render', { component: 'Spinner' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{e.props.word}</Text>
+  })
+  await startSession($)
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['Plan'] })
+  expect(opened).toEqual([]) // layout not known yet
+
+  await $.ui.mount({
+    plugin: 'checklist',
+    surface: 'terminal',
+    component: 'Spinner',
+    props: { word: 'Working', message: null, suffix: '…', mode: 'tool-use' },
+    viewport: { columns: 180, rows: 40, isFullscreen: true },
+  })
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['Build'] })
+  await $.tool.call({ tool: TOOL, action: 'add', items: ['Ship'] })
+  expect(opened).toEqual([{ id: 'checklist' }])
+
+  // Asked for with /checklist, it takes the keyboard.
+  await $.command.run({ command: 'checklist', args: '', ...COMMAND })
+  expect(opened.at(-1)).toEqual({ id: 'checklist', focus: true })
+})

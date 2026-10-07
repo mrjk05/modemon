@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, RenderElement } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderElement, RenderViewport } from 'claude-code'
 
 import type { ChecklistItem } from '../types'
 import {
@@ -29,11 +29,31 @@ const WAITING_HEAD = 'The checklist pane has no room here (it opens once the ter
 /** Args of `/checklist` that show the list (no args toggles the pane). */
 const LIST_ARGS = new Set(['', 'list', 'ls', 'show'])
 
-/** The elements every surface has, mobile included: the only ones the list trees use. */
-type ListElements = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button'>
+/** The elements every surface has, mobile included, plus the text field where the surface has one. */
+type ListElements = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button'> & { Input?: Elements['terminal']['Input'] }
+
+/** How a list tree is drawn: the pane gets hotkeys, an add field and a key hint; the inline list does not. */
+type ListOptions = { columns: number | undefined; isPane: boolean; isFocused?: boolean; showHint?: boolean }
+
+/** Items that get a digit hotkey (1-9, by position) to tick them while the pane has the keys. */
+const HOTKEY_ITEMS = 9
+/** The width from which a pane opened unasked is seated (see PaneOpenArgs). */
+const UNASKED_MIN_COLUMNS = 144
 
 const items = atom({ plugin: 'checklist', key: 'items' } as const, [])
 const storeKey = atom({ plugin: 'checklist', key: 'storeKey' } as const, '')
+const autoOpened = atom({ plugin: 'checklist', key: 'autoOpened' } as const, false)
+
+/**
+ * The layout last seen while drawing. Module-level on purpose: a render hook may
+ * not write `$.state`, and a reload re-learns it at the next draw.
+ */
+let layout: { isFullscreen?: boolean; columns?: number } = {}
+
+function learnLayout(viewport: RenderViewport | undefined): void {
+  if (viewport === undefined) return
+  layout = { isFullscreen: viewport.isFullscreen ?? layout.isFullscreen, columns: viewport.columns }
+}
 
 const TOOL_DESCRIPTION = [
   "A persistent checklist for the current repository, shared with the user (they see it above the prompt and edit it with /checklist).",
@@ -135,12 +155,35 @@ async function togglePane($: Dollar): Promise<string> {
     return 'Checklist pane closed.'
   }
   const list = await read($, items)
-  const opened = await $.ui.open({ id: PANE, title: 'Checklist', rows: Math.min(Math.max(list.length, 1) + 3, 20) })
+  // Asked for, so it takes the keyboard: digits tick, Tab walks, Esc hands the keys back.
+  const opened = await $.ui.open({ id: PANE, title: 'Checklist', focus: true, rows: paneRows(list) })
   if (opened.isPlaced) return `Checklist pane opened. ${summary(list)}`
   return `${WAITING_HEAD}\n${formatList(list)}`
 }
 
+/** Inline height: the head, the items, the add field and the hint. */
+function paneRows(list: readonly ChecklistItem[]): number {
+  return Math.min(Math.max(list.length, 1) + 5, 22)
+}
+
+/**
+ * Opens the pane unasked, once a session, only where it docks as a sidebar and
+ * the list has open work. Without the keyboard: the person is typing elsewhere.
+ */
+async function maybeAutoOpen($: Dollar): Promise<void> {
+  if (layout.isFullscreen !== true) return
+  if (layout.columns !== undefined && layout.columns < UNASKED_MIN_COLUMNS) return
+  if (await read($, autoOpened)) return
+  const list = await read($, items)
+  if (!list.some(item => item.status !== 'done')) return
+  if ((await $.ui.panes()).some(pane => pane.id === PANE)) return
+  const opened = await $.ui.open({ id: PANE, title: 'Checklist', rows: paneRows(list) })
+  if (opened.isPlaced) await update($, autoOpened, () => true)
+  else await $.ui.close({ id: PANE })
+}
+
 export const register: Register = (on, options) => {
+  const autoOpen = options.autoOpen !== false
   const showBand = options.showBand !== false
   const nudge = options.nudge !== false
   statusEnabled = options.showStatus !== false
@@ -157,6 +200,14 @@ export const register: Register = (on, options) => {
       description: 'Show or edit this repo\'s checklist (no args toggles the pane)',
       argumentHint: '[add <text> | done <n> | undo <n> | rm <n> | clear]',
     })
+    // The layout is learned from the first draws; look once they have had a moment.
+    if (autoOpen) $.clock.after(1500, () => void maybeAutoOpen($).catch(() => undefined))
+    return next(e)
+  })
+
+  // Passive: learns whether the surface docks panes, for the unasked open.
+  on('ui.render', { component: 'Spinner' }, ($, e, next) => {
+    learnLayout(e.viewport)
     return next(e)
   })
 
@@ -178,6 +229,8 @@ export const register: Register = (on, options) => {
       case 'add': {
         const texts = request.texts
         outcome = await mutate($, (list, now) => add(list, texts, now))
+        // Claude planning work is when the list is worth a sidebar.
+        if (autoOpen && outcome.error === undefined) await maybeAutoOpen($).catch(() => undefined)
         break
       }
       case 'start': {
@@ -268,6 +321,7 @@ export const register: Register = (on, options) => {
   if (showBand) {
     // One band for every plugin: draw this part, then stack whatever the hooks beneath draw under it.
     on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+      learnLayout(e.viewport)
       const list = await read($, items)
       if (e.props.hasSurvey || list.length === 0) return next(e)
       const { Box, Text } = $.ui.resolve(e)
@@ -295,9 +349,16 @@ export const register: Register = (on, options) => {
 
   // The pane, every surface that places one. Only Box, Text and Button: all of them exist on mobile too.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    learnLayout(e.viewport)
+    const ui = $.ui.resolve(e)
     const list = await read($, items)
-    return listTree($, { Box, Button, Text }, list, e.props.bodyColumns)
+    const Input = 'Input' in ui ? ui.Input : undefined
+    return listTree($, { Box: ui.Box, Button: ui.Button, Text: ui.Text, ...(Input !== undefined ? { Input } : {}) }, list, {
+      columns: e.props.bodyColumns,
+      isPane: true,
+      isFocused: e.props.isFocused,
+      showHint: e.surface === 'terminal',
+    })
   })
 
   // `/checklist` and `/checklist list` draw the list inline, with tappable ticks: always on mobile (which
@@ -309,7 +370,7 @@ export const register: Register = (on, options) => {
     if (!inline) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const list = await read($, items)
-    return listTree($, { Box, Button, Text }, list, e.viewport?.columns)
+    return listTree($, { Box, Button, Text }, list, { columns: e.viewport?.columns, isPane: false })
   })
 }
 
@@ -329,50 +390,101 @@ function isEmptyChildren(children: unknown): boolean {
   return isEmptyTree(children as RenderElement)
 }
 
-/** The full list with tick, remove and clear-done Buttons, for the pane and the inline command output. */
-function listTree($: Dollar, ui: ListElements, list: readonly ChecklistItem[], columns: number | undefined): RenderElement {
-  const { Box, Button, Text } = ui
+/**
+ * The full list with tick, start, remove and clear-done Buttons, for the pane and the inline command output.
+ * In the pane the first nine ticks answer the digits 1-9, `c` clears done items, and an add field sits below.
+ */
+function listTree($: Dollar, ui: ListElements, list: readonly ChecklistItem[], opts: ListOptions): RenderElement {
+  const { Box, Button, Input, Text } = ui
   const p = progress(list)
+  const addField =
+    opts.isPane && Input !== undefined ? (
+      <Box key="add-row" flexDirection="row">
+        <Input
+          key="add"
+          label="+ "
+          placeholder="Add an item and press Enter"
+          value=""
+          submitLabel="add"
+          {...(list.length === 0 ? { autoFocus: true as const } : {})}
+          onSubmit={text => {
+            const trimmed = text.trim()
+            if (trimmed.length > 0) void mutate($, (l, now) => add(l, [trimmed], now))
+          }}
+        />
+      </Box>
+    ) : undefined
+  const hint =
+    opts.isPane && opts.showHint === true
+      ? opts.isFocused === true
+        ? `1-${Math.max(1, Math.min(list.length, HOTKEY_ITEMS))} tick · Tab/Enter buttons${p.done > 0 ? ' · c clear done' : ''} · Esc back`
+        : 'ctrl+x tab to use the keys · or click'
+      : undefined
+  const hintRow =
+    hint === undefined ? undefined : (
+      <Text key="hint" dimColor wrap="truncate-end">
+        {hint}
+      </Text>
+    )
   if (list.length === 0) {
     return (
       <Box key="empty" flexDirection="column">
         <Text dimColor>
-          {'No items yet. Add one with /checklist add <text>, or ask Claude to plan its work with the checklist tool.'}
+          {addField !== undefined
+            ? 'No items yet. Type one below, or ask Claude to plan its work with the checklist tool.'
+            : 'No items yet. Add one with /checklist add <text>, or ask Claude to plan its work with the checklist tool.'}
         </Text>
+        {addField}
+        {hintRow}
       </Box>
     )
   }
-  // Room for the tick, `#nn `, spaces and the ✕; a narrow phone gets a shorter line rather than a wrapped one.
-  const textMax = columns === undefined ? 200 : Math.max(columns - 12, 8)
+  // Room for the tick (and its `1: `), the start mark, `#nn `, spaces and the ✕; a narrow phone gets a shorter line.
+  const textMax = opts.columns === undefined ? 200 : Math.max(opts.columns - (opts.isPane ? 18 : 12), 8)
   return (
     <Box key="list" flexDirection="column">
       <Text bold>
         {bandHead(list)} {p.total - p.done} open
       </Text>
-      {list.map(item => (
-        <Box key={`row-${item.id}`} flexDirection="row">
-          <Button
-            key={`tick-${item.id}`}
-            plain
-            label={item.status === 'done' ? '☑' : item.status === 'doing' ? '◐' : '☐'}
-            onPress={() => mutate($, (l, now) => (item.status === 'done' ? undo(l, [item.id], now) : done(l, [item.id], now)))}
-          />
-          <Text
-            dimColor={item.status === 'done'}
-            strikethrough={item.status === 'done'}
-            bold={item.status === 'doing'}
-            wrap="truncate-end"
-          >
-            {' '}#{item.id} {clip(item.text, textMax)}{' '}
-          </Text>
-          <Button key={`rm-${item.id}`} plain dimColor label="✕" onPress={() => mutate($, l => remove(l, [item.id]))} />
-        </Box>
-      ))}
+      {list.map((item, index) => {
+        const hotkey = opts.isPane && index < HOTKEY_ITEMS ? String(index + 1) : undefined
+        return (
+          <Box key={`row-${item.id}`} flexDirection="row">
+            <Button
+              key={`tick-${item.id}`}
+              plain
+              {...(hotkey !== undefined ? { hotkey } : {})}
+              label={item.status === 'done' ? '☑' : item.status === 'doing' ? '◐' : '☐'}
+              onPress={() => mutate($, (l, now) => (item.status === 'done' ? undo(l, [item.id], now) : done(l, [item.id], now)))}
+            />
+            <Text
+              dimColor={item.status === 'done'}
+              strikethrough={item.status === 'done'}
+              bold={item.status === 'doing'}
+              wrap="truncate-end"
+            >
+              {' '}#{item.id} {clip(item.text, textMax)}{' '}
+            </Text>
+            {opts.isPane && item.status === 'todo' && (
+              <Button key={`start-${item.id}`} plain dimColor label="▸" onPress={() => mutate($, (l, now) => start(l, [item.id], now))} />
+            )}
+            {opts.isPane && item.status === 'todo' && <Text> </Text>}
+            <Button key={`rm-${item.id}`} plain dimColor label="✕" onPress={() => mutate($, l => remove(l, [item.id]))} />
+          </Box>
+        )
+      })}
       {p.done > 0 && (
         <Box flexDirection="row">
-          <Button key="clear-done" label="Clear done" onPress={() => mutate($, l => clearDone(l))} />
+          <Button
+            key="clear-done"
+            {...(opts.isPane ? { hotkey: 'c' } : {})}
+            label="Clear done"
+            onPress={() => mutate($, l => clearDone(l))}
+          />
         </Box>
       )}
+      {addField}
+      {hintRow}
     </Box>
   )
 }

@@ -1,6 +1,6 @@
 {
   "name": "agent-deck",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Side pane showing every subagent of the session: status, model, type, task title, prompt summary, elapsed time and what it is doing.",
   "author": { "name": "mrjk05" },
   "license": "MIT",

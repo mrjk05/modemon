@@ -18,6 +18,8 @@ declare module 'claude-code' {
       items: ChecklistItem[]
       /** The $.store key the items persist under (one per repo root). */
       storeKey: string
+      /** True once the pane opened by itself this session. */
+      autoOpened: boolean
     }
   }
 }

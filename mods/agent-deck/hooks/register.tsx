@@ -60,6 +60,13 @@ const clockNow = atom({ plugin: 'agent-deck', key: 'now' } as const, 0)
 const autoOpened = atom({ plugin: 'agent-deck', key: 'autoOpened' } as const, false)
 const cwdAtom = atom({ plugin: 'agent-deck', key: 'cwd' } as const, '')
 const phoneWatching = atom({ plugin: 'agent-deck', key: 'phoneWatching' } as const, false)
+const expanded = atom({ plugin: 'agent-deck', key: 'expanded' } as const, [] as string[])
+const stopping = atom({ plugin: 'agent-deck', key: 'stopping' } as const, [] as string[])
+
+/** The most of a prompt a card keeps for its expanded view. */
+const PROMPT_MAX = 2000
+/** Cards that get a digit hotkey (1-9) to expand them while the pane has the keys. */
+const HOTKEY_CARDS = 9
 
 /** The ticking timer while any agent runs (runtime handle, see the header). */
 let ticker: Timer | undefined
@@ -237,6 +244,7 @@ async function agentStarted(
         type: fields.type ?? card.type,
         title: fields.title ?? card.title,
         summary: fields.prompt !== undefined ? summarizePrompt(fields.prompt) : card.summary,
+        prompt: fields.prompt !== undefined ? truncate(fields.prompt.trim(), PROMPT_MAX) : card.prompt,
         model: card.model ?? fields.model,
       }))
     }
@@ -251,6 +259,7 @@ async function agentStarted(
       toolCount: 0,
     }
     if (fields.model !== undefined) card.model = fields.model
+    if (fields.prompt !== undefined) card.prompt = truncate(fields.prompt.trim(), PROMPT_MAX)
     return [...list, card]
   })
   await maybeAutoOpen($, cfg)
@@ -333,6 +342,52 @@ async function agentEnded($: Engine, cfg: Config, agentId: string, status: Agent
   })
 }
 
+/** Removes finished cards (all, or the one keyed `key`); answers how many went. */
+async function clearFinished($: Engine, cfg: Config, key?: string): Promise<number> {
+  const before = await read($, agents)
+  const isGone = (card: AgentDeckCard) => card.status !== 'running' && (key === undefined || card.key === key)
+  const removed = before.filter(isGone).map(card => card.key)
+  if (removed.length === 0) return 0
+  await update($, agents, list => list.filter(card => !isGone(card)))
+  await update($, expanded, keys => keys.filter(one => !removed.includes(one)))
+  await update($, stopping, keys => keys.filter(one => !removed.includes(one)))
+  await settle($, cfg)
+  return removed.length
+}
+
+/** Shows or hides a card's full prompt in the pane. */
+async function toggleExpanded($: Engine, key: string): Promise<void> {
+  await update($, expanded, keys => (keys.includes(key) ? keys.filter(one => one !== key) : [...keys, key]))
+}
+
+/**
+ * Stops a running subagent through the TaskStop tool, the same call the model
+ * makes: it runs the permission check, so the person may be asked first.
+ */
+async function stopAgent($: Engine, cfg: Config, key: string): Promise<void> {
+  const card = (await read($, agents)).find(one => one.key === key)
+  if (card === undefined || card.status !== 'running') return
+  if (card.agentId === undefined) {
+    $.ui.toast('agent-deck: this agent has no id yet, so it cannot be stopped from here.')
+    return
+  }
+  await update($, stopping, keys => (keys.includes(key) ? keys : [...keys, key]))
+  let failure: string | undefined
+  try {
+    const ran = await $.tool.call({ tool: 'TaskStop', task_id: card.agentId })
+    if (ran.deny !== undefined) failure = ran.deny
+    else if (ran.isError === true) failure = ran.text ?? 'TaskStop failed'
+  } catch (error) {
+    failure = String(error)
+  }
+  if (failure !== undefined) {
+    await update($, stopping, keys => keys.filter(one => one !== key))
+    $.ui.toast(`agent-deck: could not stop "${truncate(card.title, 40)}": ${truncate(failure, 120)}`)
+    return
+  }
+  await change($, cfg, (list, at) => replaceCard(list, key, one => finish(one, 'failed', at, 'stopped from the deck')))
+}
+
 /** `/agents [clear|open|close]`: toggles the deck, or clears finished cards. */
 async function runDeck($: Engine, cfg: Config, e: CommandRunInput): Promise<CommandRunResult> {
   layout = { isFullscreen: e.presentation.isFullscreen, columns: e.presentation.columns }
@@ -344,11 +399,7 @@ async function runDeck($: Engine, cfg: Config, e: CommandRunInput): Promise<Comm
     }
   }
   if (command === 'clear') {
-    const before = await read($, agents)
-    const kept = before.filter(card => card.status === 'running')
-    const removed = before.length - kept.length
-    await update($, agents, list => list.filter(card => card.status === 'running'))
-    await settle($, cfg)
+    const removed = await clearFinished($, cfg)
     return { text: removed === 0 ? 'No finished agents to clear.' : `Cleared ${removed} finished agent${removed === 1 ? '' : 's'}.` }
   }
   // The phone docks no pane: asked from it (or where only phones draw),
@@ -366,7 +417,8 @@ async function runDeck($: Engine, cfg: Config, e: CommandRunInput): Promise<Comm
     return { text: 'Agent deck closed.' }
   }
   await quietly(() => reconcile($, cfg))
-  const opened = await $.ui.open({ id: PANE, title: TITLE })
+  // Asked for, so it takes the keyboard: Tab walks the card buttons, Esc hands the keys back.
+  const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true })
   if (opened.isPlaced) return { text: 'Agent deck opened.' }
   // Open but unplaced (no attached surface places panes): it is seated when
   // one that does attaches; until then the deck answers inline.
@@ -533,13 +585,17 @@ export const register: Register = (on, options: PluginOptions) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     learnLayout(e.viewport)
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const list = orderCards(await read($, agents))
     const now = await read($, clockNow)
+    const open = await read($, expanded)
+    const halting = await read($, stopping)
     const width = Math.max(16, e.props.bodyColumns)
     const isDesktop = e.surface === 'desktop'
+    const isTerminal = e.surface === 'terminal'
     const inner = isDesktop ? width - 4 : width - 2
     const viewing = e.props.view.agentId
+    const hasFinished = list.some(card => card.status !== 'running')
 
     const header = (
       <Box flexDirection="row" justifyContent="space-between">
@@ -559,9 +615,11 @@ export const register: Register = (on, options: PluginOptions) => {
       )
     }
 
-    const cards = list.map(card => {
+    const cards = list.map((card, index) => {
       const isRunning = card.status === 'running'
       const isFailed = card.status === 'failed'
+      const isOpen = open.includes(card.key)
+      const isStopping = isRunning && halting.includes(card.key)
       const color = isRunning ? 'claude' : isFailed ? 'error' : 'success'
       const glyph = isRunning ? '●' : isFailed ? '✗' : '✓'
       const elapsed = formatElapsed(elapsedOf(card, now))
@@ -573,6 +631,33 @@ export const register: Register = (on, options: PluginOptions) => {
         `${card.toolCount} tool${card.toolCount === 1 ? '' : 's'}` +
         (tool === undefined ? '' : card.currentTool !== undefined && isRunning ? ` · ▸ ${tool}` : ` · last ${tool}`)
       const isViewed = viewing !== undefined && card.agentId === viewing
+      const hotkey = index < HOTKEY_CARDS ? String(index + 1) : undefined
+      const fullPrompt = card.prompt ?? card.summary
+      const canExpand = fullPrompt.length > 0
+
+      const actions = (
+        <Box flexDirection="row" gap={1}>
+          <Text>{'  '}</Text>
+          {canExpand && (
+            <Button
+              key={`expand:${card.key}`}
+              plain
+              dimColor
+              {...(hotkey !== undefined ? { hotkey } : {})}
+              label={isOpen ? '▾ less' : '▸ prompt'}
+              onPress={() => toggleExpanded($, card.key)}
+            />
+          )}
+          {isRunning && !isStopping && (
+            <Button key={`stop:${card.key}`} plain dimColor label="■ stop" onPress={() => stopAgent($, cfg, card.key)} />
+          )}
+          {isStopping && <Text dimColor>stopping…</Text>}
+          {!isRunning && (
+            <Button key={`dismiss:${card.key}`} plain dimColor label="✕ dismiss" onPress={() => clearFinished($, cfg, card.key)} />
+          )}
+        </Box>
+      )
+
       const body = (
         <Box flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between">
@@ -589,22 +674,29 @@ export const register: Register = (on, options: PluginOptions) => {
             {'  '}
             {truncate(meta + (isViewed ? ' · in view' : ''), inner)}
           </Text>
-          {card.summary.length > 0 && (
-            <Text dimColor={!isRunning} wrap="truncate">
-              {'  '}
-              {truncate(card.summary, inner)}
-            </Text>
+          {isOpen ? (
+            <Box flexDirection="column" paddingLeft={2}>
+              <Text wrap="wrap">{fullPrompt}</Text>
+            </Box>
+          ) : (
+            card.summary.length > 0 && (
+              <Text dimColor={!isRunning} wrap="truncate">
+                {'  '}
+                {truncate(card.summary, inner)}
+              </Text>
+            )
           )}
           <Text dimColor wrap="truncate">
             {'  '}
             {truncate(toolLine, inner)}
           </Text>
           {card.note !== undefined && (
-            <Text color={isFailed ? 'error' : undefined} dimColor={!isFailed} wrap="truncate">
+            <Text color={isFailed ? 'error' : undefined} dimColor={!isFailed} wrap={isOpen ? 'wrap' : 'truncate'}>
               {'  '}
-              {truncate(card.note, inner)}
+              {isOpen ? card.note : truncate(card.note, inner)}
             </Text>
           )}
+          {actions}
         </Box>
       )
       return isDesktop ? (
@@ -625,12 +717,26 @@ export const register: Register = (on, options: PluginOptions) => {
       )
     })
 
-    const hasFinished = list.some(card => card.status !== 'running')
+    // The keys only work while the pane holds the keyboard; say how to get there.
+    const hint = !isTerminal
+      ? undefined
+      : e.props.isFocused
+        ? `1-${Math.min(list.length, HOTKEY_CARDS)} prompt · Tab/Enter buttons${hasFinished ? ' · c clear' : ''} · Esc back`
+        : 'ctrl+x tab to use the keys · or click a button'
     return (
       <Box flexDirection="column" gap={1}>
         {header}
         {cards}
-        {hasFinished && <Text dimColor>/agents clear removes finished agents</Text>}
+        {hasFinished && (
+          <Box flexDirection="row">
+            <Button key="clear-finished" hotkey="c" label="Clear finished" onPress={() => clearFinished($, cfg)} />
+          </Box>
+        )}
+        {hint !== undefined && (
+          <Text dimColor wrap="truncate">
+            {truncate(hint, width)}
+          </Text>
+        )}
       </Box>
     )
   })
